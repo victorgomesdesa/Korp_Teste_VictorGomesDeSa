@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/domain"
+	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/http/dto"
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/service"
 )
 
@@ -19,6 +20,7 @@ type invoiceUseCaseStub struct {
 	create func(context.Context, service.CreateInvoiceInput) (domain.Invoice, error)
 	list   func(context.Context) ([]domain.Invoice, error)
 	find   func(context.Context, int64) (domain.Invoice, error)
+	close  func(context.Context, service.CloseInvoiceInput) (domain.Invoice, error)
 	calls  int
 }
 
@@ -35,6 +37,11 @@ func (stub *invoiceUseCaseStub) List(ctx context.Context) ([]domain.Invoice, err
 func (stub *invoiceUseCaseStub) FindByID(ctx context.Context, id int64) (domain.Invoice, error) {
 	stub.calls++
 	return stub.find(ctx, id)
+}
+
+func (stub *invoiceUseCaseStub) Close(ctx context.Context, input service.CloseInvoiceInput) (domain.Invoice, error) {
+	stub.calls++
+	return stub.close(ctx, input)
 }
 
 func TestInvoiceHandlerCreate(t *testing.T) {
@@ -256,5 +263,101 @@ func readUseCaseStub() *invoiceUseCaseStub {
 		},
 		list: func(context.Context) ([]domain.Invoice, error) { return []domain.Invoice{}, nil },
 		find: func(context.Context, int64) (domain.Invoice, error) { return domain.Invoice{}, nil },
+		close: func(context.Context, service.CloseInvoiceInput) (domain.Invoice, error) {
+			return domain.Invoice{}, nil
+		},
 	}
+}
+
+func TestInvoiceHandlerClose(t *testing.T) {
+	closedAt := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name           string
+		path           string
+		idempotencyKey string
+		serviceErr     error
+		status         int
+		code           string
+		serviceCalled  bool
+	}{
+		{name: "closed invoice", path: "/api/invoices/10/close", idempotencyKey: "key-1", status: http.StatusOK, serviceCalled: true},
+		{name: "malformed id", path: "/api/invoices/not-a-number/close", idempotencyKey: "key-1", status: http.StatusBadRequest, code: "INVALID_INVOICE_ID"},
+		{name: "zero id", path: "/api/invoices/0/close", idempotencyKey: "key-1", status: http.StatusBadRequest, code: "INVALID_INVOICE_ID"},
+		{name: "missing idempotency key", path: "/api/invoices/10/close", status: http.StatusBadRequest, code: "IDEMPOTENCY_KEY_REQUIRED"},
+		{name: "whitespace idempotency key", path: "/api/invoices/10/close", idempotencyKey: "   ", status: http.StatusBadRequest, code: "IDEMPOTENCY_KEY_REQUIRED"},
+		{name: "invoice not found", path: "/api/invoices/99/close", idempotencyKey: "key-1", serviceErr: domain.ErrInvoiceNotFound, status: http.StatusNotFound, code: "INVOICE_NOT_FOUND", serviceCalled: true},
+		{name: "invoice already closed", path: "/api/invoices/10/close", idempotencyKey: "key-2", serviceErr: domain.ErrInvoiceAlreadyClosed, status: http.StatusConflict, code: "INVOICE_ALREADY_CLOSED", serviceCalled: true},
+		{name: "close in progress", path: "/api/invoices/10/close", idempotencyKey: "key-2", serviceErr: domain.ErrInvoiceCloseAlreadyInProgress, status: http.StatusConflict, code: "INVOICE_CLOSE_ALREADY_IN_PROGRESS", serviceCalled: true},
+		{name: "insufficient stock", path: "/api/invoices/10/close", idempotencyKey: "key-1", serviceErr: domain.ErrInsufficientStock, status: http.StatusConflict, code: "INSUFFICIENT_STOCK", serviceCalled: true},
+		{name: "idempotency key reused", path: "/api/invoices/10/close", idempotencyKey: "key-1", serviceErr: domain.ErrIdempotencyKeyReused, status: http.StatusConflict, code: "IDEMPOTENCY_KEY_REUSED", serviceCalled: true},
+		{name: "product not found", path: "/api/invoices/10/close", idempotencyKey: "key-1", serviceErr: domain.ErrProductNotFound, status: http.StatusNotFound, code: "PRODUCT_NOT_FOUND", serviceCalled: true},
+		{name: "Inventory unavailable", path: "/api/invoices/10/close", idempotencyKey: "key-1", serviceErr: domain.ErrInventoryServiceUnavailable, status: http.StatusServiceUnavailable, code: "INVENTORY_SERVICE_UNAVAILABLE", serviceCalled: true},
+		{name: "unexpected error", path: "/api/invoices/10/close", idempotencyKey: "key-1", serviceErr: errors.New("SQL details"), status: http.StatusInternalServerError, code: "INTERNAL_ERROR", serviceCalled: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var receivedInput service.CloseInvoiceInput
+			useCase := readUseCaseStub()
+			useCase.close = func(_ context.Context, input service.CloseInvoiceInput) (domain.Invoice, error) {
+				receivedInput = input
+				if test.serviceErr != nil {
+					return domain.Invoice{}, test.serviceErr
+				}
+				return domain.Invoice{
+					ID:       input.InvoiceID,
+					Number:   1001,
+					Status:   domain.InvoiceStatusClosed,
+					ClosedAt: &closedAt,
+					Items:    []domain.InvoiceItem{{ID: 1, ProductID: 1, ProductCode: "PROD-001", Quantity: 2}},
+				}, nil
+			}
+
+			response := performCloseInvoice(test.path, test.idempotencyKey, useCase)
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d; body: %s", response.Code, test.status, response.Body.String())
+			}
+			if (useCase.calls > 0) != test.serviceCalled {
+				t.Fatalf("service calls = %d, want called = %t", useCase.calls, test.serviceCalled)
+			}
+			if bytes.Contains(response.Body.Bytes(), []byte("SQL details")) {
+				t.Fatalf("response exposed internal details: %s", response.Body.String())
+			}
+
+			if test.code != "" {
+				var errorResponse dto.ErrorResponse
+				if err := json.Unmarshal(response.Body.Bytes(), &errorResponse); err != nil {
+					t.Fatalf("decode error response: %v", err)
+				}
+				if errorResponse.Code != test.code {
+					t.Fatalf("error code = %q, want %q", errorResponse.Code, test.code)
+				}
+				return
+			}
+
+			if receivedInput.InvoiceID != 10 || receivedInput.IdempotencyKey != test.idempotencyKey {
+				t.Fatalf("service input = %+v", receivedInput)
+			}
+			var invoice dto.InvoiceResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &invoice); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if invoice.Status != domain.InvoiceStatusClosed || invoice.ClosedAt == nil || len(invoice.Items) != 1 {
+				t.Fatalf("closed invoice response = %+v", invoice)
+			}
+		})
+	}
+}
+
+func performCloseInvoice(path, idempotencyKey string, useCase InvoiceUseCase) *httptest.ResponseRecorder {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/invoices/:id/close", NewInvoiceHandler(useCase).Close)
+	request := httptest.NewRequest(http.MethodPost, path, nil)
+	if idempotencyKey != "" {
+		request.Header.Set(idempotencyKeyHeader, idempotencyKey)
+	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	return response
 }

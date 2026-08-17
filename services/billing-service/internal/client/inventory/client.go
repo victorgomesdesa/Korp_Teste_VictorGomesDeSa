@@ -1,6 +1,7 @@
 package inventory
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,8 +16,10 @@ import (
 )
 
 const (
-	requestIDHeader     = "X-Request-Id"
-	maxResponseBodySize = 1 << 20
+	requestIDHeader      = "X-Request-Id"
+	idempotencyKeyHeader = "Idempotency-Key"
+	consumedStockStatus  = "CONSUMED"
+	maxResponseBodySize  = 1 << 20
 )
 
 type RequestIDProvider func(context.Context) string
@@ -110,6 +113,80 @@ func (c *Client) GetProduct(ctx context.Context, productID int64) (product Produ
 	}
 }
 
+func (c *Client) ConsumeStock(ctx context.Context, idempotencyKey string, consumption ConsumeStockRequest) (result StockConsumption, err error) {
+	startedAt := time.Now()
+	requestID := c.requestIDProvider(ctx)
+	defer func() {
+		c.logger.InfoContext(
+			ctx,
+			"Inventory request completed",
+			"request_id", requestID,
+			"operation", "inventory_consume_stock",
+			"invoice_id", consumption.InvoiceID,
+			"duration_ms", time.Since(startedAt).Milliseconds(),
+			"result", requestResult(err),
+			"error_type", errorType(err),
+		)
+	}()
+
+	if strings.TrimSpace(idempotencyKey) == "" || consumption.InvoiceID <= 0 || len(consumption.Items) == 0 {
+		return StockConsumption{}, ErrInvalidConsumeRequest
+	}
+
+	payload, err := json.Marshal(consumption)
+	if err != nil {
+		return StockConsumption{}, ErrInvalidConsumeRequest
+	}
+
+	endpoint := c.baseURL.JoinPath("api", "stock", "consume")
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(payload))
+	if err != nil {
+		return StockConsumption{}, ErrInvalidResponse
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(idempotencyKeyHeader, idempotencyKey)
+	if requestID != "" {
+		request.Header.Set(requestIDHeader, requestID)
+	}
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return StockConsumption{}, ErrServiceUnavailable
+	}
+	defer response.Body.Close()
+
+	switch {
+	case response.StatusCode == http.StatusOK:
+		result, err = decodeStockConsumption(response.Body)
+		if err != nil {
+			return StockConsumption{}, ErrInvalidResponse
+		}
+		return result, nil
+	case response.StatusCode == http.StatusNotFound:
+		upstreamCode := decodeUpstreamErrorCode(response.Body)
+		if upstreamCode == "PRODUCT_NOT_FOUND" {
+			return StockConsumption{}, ErrProductNotFound
+		}
+		return StockConsumption{}, &UpstreamError{StatusCode: response.StatusCode, Code: upstreamCode}
+	case response.StatusCode == http.StatusConflict:
+		upstreamCode := decodeUpstreamErrorCode(response.Body)
+		switch upstreamCode {
+		case "INSUFFICIENT_STOCK":
+			return StockConsumption{}, ErrInsufficientStock
+		case "IDEMPOTENCY_KEY_REUSED":
+			return StockConsumption{}, ErrIdempotencyKeyReused
+		}
+		return StockConsumption{}, &UpstreamError{StatusCode: response.StatusCode, Code: upstreamCode}
+	case response.StatusCode >= http.StatusInternalServerError:
+		return StockConsumption{}, ErrServiceUnavailable
+	default:
+		return StockConsumption{}, &UpstreamError{
+			StatusCode: response.StatusCode,
+			Code:       decodeUpstreamErrorCode(response.Body),
+		}
+	}
+}
+
 func decodeProduct(body io.Reader) (Product, error) {
 	decoder := json.NewDecoder(io.LimitReader(body, maxResponseBodySize))
 	var product Product
@@ -126,6 +203,21 @@ func decodeProduct(body io.Reader) (Product, error) {
 	return product, nil
 }
 
+func decodeStockConsumption(body io.Reader) (StockConsumption, error) {
+	decoder := json.NewDecoder(io.LimitReader(body, maxResponseBodySize))
+	var consumption StockConsumption
+	if err := decoder.Decode(&consumption); err != nil {
+		return StockConsumption{}, fmt.Errorf("decode stock consumption response: %w", err)
+	}
+	if err := ensureJSONEnd(decoder); err != nil {
+		return StockConsumption{}, err
+	}
+	if consumption.InvoiceID <= 0 || consumption.Status != consumedStockStatus {
+		return StockConsumption{}, errors.New("stock consumption response does not match the expected contract")
+	}
+	return consumption, nil
+}
+
 func decodeUpstreamErrorCode(body io.Reader) string {
 	decoder := json.NewDecoder(io.LimitReader(body, maxResponseBodySize))
 	var response errorResponse
@@ -139,9 +231,9 @@ func ensureJSONEnd(decoder *json.Decoder) error {
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return errors.New("product response contains multiple JSON values")
+			return errors.New("Inventory response contains multiple JSON values")
 		}
-		return fmt.Errorf("decode product response trailer: %w", err)
+		return fmt.Errorf("decode Inventory response trailer: %w", err)
 	}
 	return nil
 }
@@ -165,6 +257,12 @@ func errorType(err error) string {
 		return "inventory_invalid_response"
 	case errors.Is(err, ErrInvalidProductID):
 		return "invalid_product_id"
+	case errors.Is(err, ErrInsufficientStock):
+		return "insufficient_stock"
+	case errors.Is(err, ErrIdempotencyKeyReused):
+		return "idempotency_key_reused"
+	case errors.Is(err, ErrInvalidConsumeRequest):
+		return "invalid_consume_request"
 	default:
 		var upstreamError *UpstreamError
 		if errors.As(err, &upstreamError) {

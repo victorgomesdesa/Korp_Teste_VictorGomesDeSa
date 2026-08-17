@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/domain"
@@ -12,10 +13,13 @@ import (
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/service"
 )
 
+const idempotencyKeyHeader = "Idempotency-Key"
+
 type InvoiceUseCase interface {
 	Create(context.Context, service.CreateInvoiceInput) (domain.Invoice, error)
 	List(context.Context) ([]domain.Invoice, error)
 	FindByID(context.Context, int64) (domain.Invoice, error)
+	Close(context.Context, service.CloseInvoiceInput) (domain.Invoice, error)
 }
 
 type InvoiceHandler struct {
@@ -78,6 +82,52 @@ func (h *InvoiceHandler) FindByID(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, dto.InvoiceFromDomain(invoice))
+}
+
+func (h *InvoiceHandler) Close(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeInvoiceError(c, http.StatusBadRequest, "INVALID_INVOICE_ID", "ID da nota fiscal inválido.")
+		return
+	}
+
+	idempotencyKey := strings.TrimSpace(c.GetHeader(idempotencyKeyHeader))
+	if idempotencyKey == "" {
+		writeInvoiceError(c, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key é obrigatório.")
+		return
+	}
+
+	invoice, err := h.service.Close(c.Request.Context(), service.CloseInvoiceInput{
+		InvoiceID:      id,
+		IdempotencyKey: idempotencyKey,
+	})
+	if err != nil {
+		handleCloseInvoiceError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, dto.InvoiceFromDomain(invoice))
+}
+
+func handleCloseInvoiceError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, domain.ErrInvoiceNotFound):
+		writeInvoiceError(c, http.StatusNotFound, "INVOICE_NOT_FOUND", "Nota fiscal não encontrada.")
+	case errors.Is(err, domain.ErrInvoiceAlreadyClosed):
+		writeInvoiceError(c, http.StatusConflict, "INVOICE_ALREADY_CLOSED", "Nota fiscal já fechada.")
+	case errors.Is(err, domain.ErrInvoiceCloseAlreadyInProgress):
+		writeInvoiceError(c, http.StatusConflict, "INVOICE_CLOSE_ALREADY_IN_PROGRESS", "Fechamento da nota fiscal já em andamento.")
+	case errors.Is(err, domain.ErrInsufficientStock):
+		writeInvoiceError(c, http.StatusConflict, "INSUFFICIENT_STOCK", "Estoque insuficiente para fechar a nota fiscal.")
+	case errors.Is(err, domain.ErrIdempotencyKeyReused):
+		writeInvoiceError(c, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key já utilizada em outra operação.")
+	case errors.Is(err, domain.ErrProductNotFound):
+		writeInvoiceError(c, http.StatusNotFound, "PRODUCT_NOT_FOUND", "Produto não encontrado.")
+	case errors.Is(err, domain.ErrInventoryServiceUnavailable):
+		writeInvoiceError(c, http.StatusServiceUnavailable, "INVENTORY_SERVICE_UNAVAILABLE", "Serviço de estoque indisponível.")
+	default:
+		writeInvoiceError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Erro interno do servidor.")
+	}
 }
 
 func handleCreateInvoiceError(c *gin.Context, err error) {

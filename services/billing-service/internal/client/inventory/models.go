@@ -11,6 +11,21 @@ type Product struct {
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
+type ConsumeStockRequest struct {
+	InvoiceID int64              `json:"invoiceId"`
+	Items     []ConsumeStockItem `json:"items"`
+}
+
+type ConsumeStockItem struct {
+	ProductID int64 `json:"productId"`
+	Quantity  int64 `json:"quantity"`
+}
+
+type StockConsumption struct {
+	InvoiceID int64  `json:"invoiceId"`
+	Status    string `json:"status"`
+}
+
 type errorResponse struct {
 	Code string `json:"code"`
 }

@@ -206,3 +206,168 @@ func newTestClient(t *testing.T, baseURL string, timeout time.Duration) *Client 
 	}
 	return client
 }
+
+const validConsumptionJSON = `{"invoiceId":10,"status":"CONSUMED"}`
+
+func consumeStockFixture() ConsumeStockRequest {
+	return ConsumeStockRequest{
+		InvoiceID: 10,
+		Items:     []ConsumeStockItem{{ProductID: 1, Quantity: 2}},
+	}
+}
+
+func TestConsumeStockSendsCanonicalRequest(t *testing.T) {
+	const requestID = "billing-request-id"
+	type receivedRequest struct {
+		method         string
+		path           string
+		idempotencyKey string
+		requestID      string
+		body           string
+	}
+	received := make(chan receivedRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		received <- receivedRequest{
+			method:         request.Method,
+			path:           request.URL.Path,
+			idempotencyKey: request.Header.Get(idempotencyKeyHeader),
+			requestID:      request.Header.Get(requestIDHeader),
+			body:           string(body),
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(validConsumptionJSON))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestClient(t, server.URL, time.Second)
+	ctx := context.WithValue(context.Background(), testRequestIDKey{}, requestID)
+
+	consumption, err := client.ConsumeStock(ctx, "key-1", consumeStockFixture())
+	if err != nil {
+		t.Fatalf("ConsumeStock() returned an unexpected error: %v", err)
+	}
+	if consumption.InvoiceID != 10 || consumption.Status != consumedStockStatus {
+		t.Fatalf("consumption = %+v", consumption)
+	}
+
+	got := <-received
+	if got.method != http.MethodPost || got.path != "/api/stock/consume" {
+		t.Fatalf("request = %s %s, want POST /api/stock/consume", got.method, got.path)
+	}
+	if got.idempotencyKey != "key-1" {
+		t.Fatalf("Idempotency-Key = %q, want key-1", got.idempotencyKey)
+	}
+	if got.requestID != requestID {
+		t.Fatalf("X-Request-Id = %q, want %q", got.requestID, requestID)
+	}
+	if got.body != `{"invoiceId":10,"items":[{"productId":1,"quantity":2}]}` {
+		t.Fatalf("request body = %s", got.body)
+	}
+}
+
+func TestConsumeStockMapsUpstreamErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   error
+	}{
+		{name: "insufficient stock", status: http.StatusConflict, body: `{"code":"INSUFFICIENT_STOCK"}`, want: ErrInsufficientStock},
+		{name: "idempotency key reused", status: http.StatusConflict, body: `{"code":"IDEMPOTENCY_KEY_REUSED"}`, want: ErrIdempotencyKeyReused},
+		{name: "product not found", status: http.StatusNotFound, body: `{"code":"PRODUCT_NOT_FOUND"}`, want: ErrProductNotFound},
+		{name: "server error", status: http.StatusInternalServerError, want: ErrServiceUnavailable},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				response.WriteHeader(test.status)
+				_, _ = response.Write([]byte(test.body))
+			}))
+			t.Cleanup(server.Close)
+
+			_, err := newTestClient(t, server.URL, time.Second).ConsumeStock(context.Background(), "key-1", consumeStockFixture())
+			if !errors.Is(err, test.want) {
+				t.Fatalf("ConsumeStock() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestConsumeStockPreservesUnexpectedConflict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusConflict)
+		_, _ = response.Write([]byte(`{"code":"UNEXPECTED_CONFLICT"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := newTestClient(t, server.URL, time.Second).ConsumeStock(context.Background(), "key-1", consumeStockFixture())
+	var upstreamError *UpstreamError
+	if !errors.As(err, &upstreamError) || upstreamError.Code != "UNEXPECTED_CONFLICT" {
+		t.Fatalf("ConsumeStock() error = %v, want unexpected upstream conflict", err)
+	}
+}
+
+func TestConsumeStockRejectsInvalidRequestBeforeCalling(t *testing.T) {
+	tests := []struct {
+		name           string
+		idempotencyKey string
+		request        ConsumeStockRequest
+	}{
+		{name: "missing key", request: consumeStockFixture()},
+		{name: "whitespace key", idempotencyKey: "   ", request: consumeStockFixture()},
+		{name: "invalid invoice", idempotencyKey: "key-1", request: ConsumeStockRequest{Items: consumeStockFixture().Items}},
+		{name: "empty items", idempotencyKey: "key-1", request: ConsumeStockRequest{InvoiceID: 10}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Error("Inventory must not be called for an invalid request")
+			}))
+			t.Cleanup(server.Close)
+
+			_, err := newTestClient(t, server.URL, time.Second).ConsumeStock(context.Background(), test.idempotencyKey, test.request)
+			if !errors.Is(err, ErrInvalidConsumeRequest) {
+				t.Fatalf("ConsumeStock() error = %v, want invalid consume request", err)
+			}
+		})
+	}
+}
+
+func TestConsumeStockRejectsUnexpectedContract(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "unexpected status", body: `{"invoiceId":10,"status":"PENDING"}`},
+		{name: "missing invoice", body: `{"status":"CONSUMED"}`},
+		{name: "invalid JSON", body: `{"invoiceId":`},
+		{name: "multiple JSON values", body: validConsumptionJSON + validConsumptionJSON},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				_, _ = response.Write([]byte(test.body))
+			}))
+			t.Cleanup(server.Close)
+
+			_, err := newTestClient(t, server.URL, time.Second).ConsumeStock(context.Background(), "key-1", consumeStockFixture())
+			if !errors.Is(err, ErrInvalidResponse) {
+				t.Fatalf("ConsumeStock() error = %v, want invalid response", err)
+			}
+		})
+	}
+}
+
+func TestConsumeStockMapsNetworkFailureToUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	serverURL := server.URL
+	server.Close()
+
+	_, err := newTestClient(t, serverURL, time.Second).ConsumeStock(context.Background(), "key-1", consumeStockFixture())
+	if !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("ConsumeStock() error = %v, want service unavailable", err)
+	}
+}

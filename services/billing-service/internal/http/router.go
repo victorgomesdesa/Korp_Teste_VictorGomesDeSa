@@ -23,6 +23,7 @@ func NewRouter(logger *slog.Logger, database handler.DatabasePinger, invoiceServ
 	router.POST("/api/invoices", invoiceHandler.Create)
 	router.GET("/api/invoices", invoiceHandler.List)
 	router.GET("/api/invoices/:id", invoiceHandler.FindByID)
+	router.POST("/api/invoices/:id/close", invoiceHandler.Close)
 
 	return router
 }
