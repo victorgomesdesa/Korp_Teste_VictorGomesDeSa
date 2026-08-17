@@ -13,6 +13,8 @@ import (
 type invoiceRepositoryStub struct {
 	created domain.Invoice
 	result  domain.Invoice
+	listed  []domain.Invoice
+	found   domain.Invoice
 	err     error
 	calls   int
 }
@@ -27,6 +29,22 @@ func (stub *invoiceRepositoryStub) Create(_ context.Context, invoice domain.Invo
 		return stub.result, nil
 	}
 	return invoice, nil
+}
+
+func (stub *invoiceRepositoryStub) List(_ context.Context) ([]domain.Invoice, error) {
+	stub.calls++
+	if stub.err != nil {
+		return nil, stub.err
+	}
+	return stub.listed, nil
+}
+
+func (stub *invoiceRepositoryStub) FindByID(_ context.Context, _ int64) (domain.Invoice, error) {
+	stub.calls++
+	if stub.err != nil {
+		return domain.Invoice{}, stub.err
+	}
+	return stub.found, nil
 }
 
 type productClientStub struct {
@@ -136,6 +154,88 @@ func TestInvoiceServiceMapsInventoryErrorsWithoutPersisting(t *testing.T) {
 			}
 			if repository.calls != 0 {
 				t.Fatalf("repository calls = %d, want 0", repository.calls)
+			}
+		})
+	}
+}
+
+func TestInvoiceServiceListsInvoices(t *testing.T) {
+	want := []domain.Invoice{
+		{ID: 2, Number: 1002, Status: domain.InvoiceStatusOpen},
+		{ID: 1, Number: 1001, Status: domain.InvoiceStatusClosed},
+	}
+	repository := &invoiceRepositoryStub{listed: want}
+	client := &productClientStub{}
+
+	got, err := NewInvoiceService(repository, client).List(context.Background())
+
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("List() = %#v, want %#v", got, want)
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("Inventory calls = %v, want none", client.calls)
+	}
+}
+
+func TestInvoiceServiceListsEmptyInvoices(t *testing.T) {
+	repository := &invoiceRepositoryStub{listed: []domain.Invoice{}}
+	got, err := NewInvoiceService(repository, &productClientStub{}).List(context.Background())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Fatalf("List() = %#v, want non-nil empty slice", got)
+	}
+}
+
+func TestInvoiceServiceFindsInvoiceWithoutInventory(t *testing.T) {
+	want := domain.Invoice{
+		ID: 1, Number: 1001, Status: domain.InvoiceStatusOpen,
+		Items: []domain.InvoiceItem{{ID: 10, ProductID: 7, ProductCode: "SNAPSHOT", ProductDescription: "Descrição histórica", Quantity: 2}},
+	}
+	repository := &invoiceRepositoryStub{found: want}
+	client := &productClientStub{errors: map[int64]error{7: errors.New("Inventory offline")}}
+
+	got, err := NewInvoiceService(repository, client).FindByID(context.Background(), 1)
+
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("FindByID() = %#v, want %#v", got, want)
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("Inventory calls = %v, want none", client.calls)
+	}
+}
+
+func TestInvoiceServicePropagatesReadErrors(t *testing.T) {
+	unexpected := errors.New("database failed")
+	tests := []struct {
+		name string
+		err  error
+		find bool
+	}{
+		{name: "invoice not found", err: domain.ErrInvoiceNotFound, find: true},
+		{name: "unexpected find error", err: unexpected, find: true},
+		{name: "unexpected list error", err: unexpected},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &invoiceRepositoryStub{err: test.err}
+			invoiceService := NewInvoiceService(repository, &productClientStub{})
+			var err error
+			if test.find {
+				_, err = invoiceService.FindByID(context.Background(), 999999)
+			} else {
+				_, err = invoiceService.List(context.Background())
+			}
+			if !errors.Is(err, test.err) {
+				t.Fatalf("error = %v, want %v", err, test.err)
 			}
 		})
 	}

@@ -8,4 +8,6 @@ import (
 
 type InvoiceRepository interface {
 	Create(context.Context, domain.Invoice) (domain.Invoice, error)
+	List(context.Context) ([]domain.Invoice, error)
+	FindByID(context.Context, int64) (domain.Invoice, error)
 }

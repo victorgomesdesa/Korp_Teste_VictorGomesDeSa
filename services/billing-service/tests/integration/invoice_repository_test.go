@@ -4,6 +4,7 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -74,6 +75,70 @@ func TestInvoiceRepositoryRollsBackInvoiceWhenAnItemFails(t *testing.T) {
 	}
 	if invoiceCount != 0 || itemCount != 0 {
 		t.Fatalf("persisted invoices=%d items=%d, want zero after rollback", invoiceCount, itemCount)
+	}
+}
+
+func TestInvoiceRepositoryListsInvoicesByDescendingNumber(t *testing.T) {
+	pool := newTestPool(t)
+	repository := postgresrepository.NewInvoiceRepository(pool)
+	first, err := repository.Create(context.Background(), invoiceFixture(1, 1))
+	if err != nil {
+		t.Fatalf("create first invoice: %v", err)
+	}
+	second, err := repository.Create(context.Background(), invoiceFixture(2, 1))
+	if err != nil {
+		t.Fatalf("create second invoice: %v", err)
+	}
+
+	invoices, err := repository.List(context.Background())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(invoices) != 2 || invoices[0].ID != second.ID || invoices[1].ID != first.ID {
+		t.Fatalf("List() = %+v, want IDs [%d %d]", invoices, second.ID, first.ID)
+	}
+	if invoices[0].Number <= invoices[1].Number {
+		t.Fatalf("numbers are not descending: %d, %d", invoices[0].Number, invoices[1].Number)
+	}
+	if invoices[0].Items != nil || invoices[1].Items != nil {
+		t.Fatalf("list should not load items: %+v", invoices)
+	}
+}
+
+func TestInvoiceRepositoryFindsDetailsAndStoredSnapshots(t *testing.T) {
+	pool := newTestPool(t)
+	repository := postgresrepository.NewInvoiceRepository(pool)
+	fixture := domain.Invoice{Items: []domain.InvoiceItem{
+		{ProductID: 10, ProductCode: "PROD-OLD", ProductDescription: "Descrição histórica", Quantity: 3},
+		{ProductID: 11, ProductCode: "PROD-SECOND", ProductDescription: "Segundo item", Quantity: 1},
+	}}
+	created, err := repository.Create(context.Background(), fixture)
+	if err != nil {
+		t.Fatalf("create invoice: %v", err)
+	}
+
+	found, err := repository.FindByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if found.ID != created.ID || found.Number != created.Number || found.Status != domain.InvoiceStatusOpen || found.ClosedAt != nil {
+		t.Fatalf("invoice details = %+v", found)
+	}
+	if len(found.Items) != 2 || found.Items[0].ID >= found.Items[1].ID {
+		t.Fatalf("items are not ordered by ascending ID: %+v", found.Items)
+	}
+	if found.Items[0].InvoiceID != found.ID || found.Items[0].ProductCode != "PROD-OLD" || found.Items[0].ProductDescription != "Descrição histórica" {
+		t.Fatalf("stored snapshot was not loaded: %+v", found.Items[0])
+	}
+}
+
+func TestInvoiceRepositoryReturnsDomainNotFound(t *testing.T) {
+	pool := newTestPool(t)
+	repository := postgresrepository.NewInvoiceRepository(pool)
+
+	_, err := repository.FindByID(context.Background(), 999999)
+	if !errors.Is(err, domain.ErrInvoiceNotFound) {
+		t.Fatalf("FindByID() error = %v, want ErrInvoiceNotFound", err)
 	}
 }
 

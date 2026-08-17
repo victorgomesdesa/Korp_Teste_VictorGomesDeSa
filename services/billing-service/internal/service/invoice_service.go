@@ -63,6 +63,14 @@ func (s *InvoiceService) Create(ctx context.Context, input CreateInvoiceInput) (
 	return s.repository.Create(ctx, invoice)
 }
 
+func (s *InvoiceService) List(ctx context.Context) ([]domain.Invoice, error) {
+	return s.repository.List(ctx)
+}
+
+func (s *InvoiceService) FindByID(ctx context.Context, id int64) (domain.Invoice, error) {
+	return s.repository.FindByID(ctx, id)
+}
+
 func validateCreateInvoice(input CreateInvoiceInput) error {
 	if len(input.Items) == 0 {
 		return &domain.ValidationError{Code: ValidationCodeInvalidItems}

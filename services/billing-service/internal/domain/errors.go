@@ -6,6 +6,7 @@ var (
 	ErrValidation                  = errors.New("validation error")
 	ErrProductNotFound             = errors.New("product not found")
 	ErrInventoryServiceUnavailable = errors.New("inventory service unavailable")
+	ErrInvoiceNotFound             = errors.New("invoice not found")
 )
 
 type ValidationError struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/domain"
@@ -13,6 +14,8 @@ import (
 
 type InvoiceUseCase interface {
 	Create(context.Context, service.CreateInvoiceInput) (domain.Invoice, error)
+	List(context.Context) ([]domain.Invoice, error)
+	FindByID(context.Context, int64) (domain.Invoice, error)
 }
 
 type InvoiceHandler struct {
@@ -45,6 +48,36 @@ func (h *InvoiceHandler) Create(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, dto.InvoiceFromDomain(invoice))
+}
+
+func (h *InvoiceHandler) List(c *gin.Context) {
+	invoices, err := h.service.List(c.Request.Context())
+	if err != nil {
+		writeInvoiceError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Erro interno do servidor.")
+		return
+	}
+
+	c.JSON(http.StatusOK, dto.InvoiceSummariesFromDomain(invoices))
+}
+
+func (h *InvoiceHandler) FindByID(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeInvoiceError(c, http.StatusBadRequest, "INVALID_INVOICE_ID", "ID da nota fiscal inválido.")
+		return
+	}
+
+	invoice, err := h.service.FindByID(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, domain.ErrInvoiceNotFound) {
+			writeInvoiceError(c, http.StatusNotFound, "INVOICE_NOT_FOUND", "Nota fiscal não encontrada.")
+			return
+		}
+		writeInvoiceError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Erro interno do servidor.")
+		return
+	}
+
+	c.JSON(http.StatusOK, dto.InvoiceFromDomain(invoice))
 }
 
 func handleCreateInvoiceError(c *gin.Context, err error) {

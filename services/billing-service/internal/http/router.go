@@ -21,6 +21,8 @@ func NewRouter(logger *slog.Logger, database handler.DatabasePinger, invoiceServ
 	)
 	router.GET("/health", healthHandler.Check)
 	router.POST("/api/invoices", invoiceHandler.Create)
+	router.GET("/api/invoices", invoiceHandler.List)
+	router.GET("/api/invoices/:id", invoiceHandler.FindByID)
 
 	return router
 }

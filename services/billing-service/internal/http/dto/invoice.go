@@ -24,6 +24,14 @@ type InvoiceResponse struct {
 	Items     []InvoiceItemResponse `json:"items"`
 }
 
+type InvoiceSummaryResponse struct {
+	ID        int64                `json:"id"`
+	Number    int64                `json:"number"`
+	Status    domain.InvoiceStatus `json:"status"`
+	CreatedAt time.Time            `json:"createdAt"`
+	ClosedAt  *time.Time           `json:"closedAt"`
+}
+
 type InvoiceItemResponse struct {
 	ID                 int64  `json:"id"`
 	ProductID          int64  `json:"productId"`
@@ -57,4 +65,18 @@ func InvoiceFromDomain(invoice domain.Invoice) InvoiceResponse {
 		ClosedAt:  invoice.ClosedAt,
 		Items:     items,
 	}
+}
+
+func InvoiceSummariesFromDomain(invoices []domain.Invoice) []InvoiceSummaryResponse {
+	response := make([]InvoiceSummaryResponse, 0, len(invoices))
+	for _, invoice := range invoices {
+		response = append(response, InvoiceSummaryResponse{
+			ID:        invoice.ID,
+			Number:    invoice.Number,
+			Status:    invoice.Status,
+			CreatedAt: invoice.CreatedAt,
+			ClosedAt:  invoice.ClosedAt,
+		})
+	}
+	return response
 }
