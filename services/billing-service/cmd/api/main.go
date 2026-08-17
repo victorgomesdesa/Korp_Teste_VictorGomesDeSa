@@ -11,10 +11,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/client/inventory"
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/config"
 	httpapi "github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/http"
+	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/http/middleware"
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/platform/database"
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/platform/logger"
+	postgresrepository "github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/repository/postgres"
+	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/service"
 )
 
 const (
@@ -50,9 +54,21 @@ func run() error {
 	}
 	defer pool.Close()
 
+	inventoryClient, err := inventory.New(
+		cfg.InventoryServiceURL,
+		cfg.InventoryTimeout,
+		appLogger,
+		middleware.RequestIDFromContext,
+	)
+	if err != nil {
+		return fmt.Errorf("create Inventory client: %w", err)
+	}
+	invoiceRepository := postgresrepository.NewInvoiceRepository(pool)
+	invoiceService := service.NewInvoiceService(invoiceRepository, inventoryClient)
+
 	server := &http.Server{
 		Addr:              ":" + cfg.ServicePort,
-		Handler:           httpapi.NewRouter(appLogger, pool),
+		Handler:           httpapi.NewRouter(appLogger, pool, invoiceService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
