@@ -30,6 +30,22 @@ services:
     ports:
       - "${INVENTORY_SERVICE_PORT:-8080}:${INVENTORY_SERVICE_PORT:-8080}"
 
+  inventory-migrate:
+    image: migrate/migrate:v4.18.3
+    profiles:
+      - tools
+    environment:
+      INVENTORY_DB_HOST: inventory-db
+      INVENTORY_DB_PORT: 5432
+      INVENTORY_DB_NAME: ${INVENTORY_DB_NAME:-inventory_db}
+      INVENTORY_DB_USER: ${INVENTORY_DB_USER:-inventory}
+      INVENTORY_DB_PASSWORD: ${INVENTORY_DB_PASSWORD:-inventory_local}
+    depends_on:
+      inventory-db:
+        condition: service_healthy
+    volumes:
+      - ./services/inventory-service/migrations:/migrations:ro
+
   billing-db:
     image: postgres:16-alpine
     environment:
