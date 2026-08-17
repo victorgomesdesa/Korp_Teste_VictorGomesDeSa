@@ -101,11 +101,28 @@ services:
       BILLING_DB_USER: ${BILLING_DB_USER:-billing}
       BILLING_DB_PASSWORD: ${BILLING_DB_PASSWORD:-billing_local}
       INVENTORY_SERVICE_URL: ${INVENTORY_SERVICE_URL:-http://inventory-service:8080}
+      INVENTORY_SERVICE_TIMEOUT: ${INVENTORY_SERVICE_TIMEOUT:-3s}
     depends_on:
       billing-db:
         condition: service_healthy
     ports:
       - "${BILLING_SERVICE_PORT:-8081}:${BILLING_SERVICE_PORT:-8081}"
+
+  billing-migrate:
+    image: migrate/migrate:v4.18.3
+    profiles:
+      - tools
+    environment:
+      BILLING_DB_HOST: billing-db
+      BILLING_DB_PORT: 5432
+      BILLING_DB_NAME: ${BILLING_DB_NAME:-billing_db}
+      BILLING_DB_USER: ${BILLING_DB_USER:-billing}
+      BILLING_DB_PASSWORD: ${BILLING_DB_PASSWORD:-billing_local}
+    depends_on:
+      billing-db:
+        condition: service_healthy
+    volumes:
+      - ./services/billing-service/migrations:/migrations:ro
 
 volumes:
   inventory-db-data:

@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadUsesSafeDevelopmentDefaults(t *testing.T) {
@@ -13,6 +14,7 @@ func TestLoadUsesSafeDevelopmentDefaults(t *testing.T) {
 	t.Setenv("BILLING_DB_USER", "")
 	t.Setenv("BILLING_DB_PASSWORD", "secret")
 	t.Setenv("INVENTORY_SERVICE_URL", "")
+	t.Setenv("INVENTORY_SERVICE_TIMEOUT", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -30,6 +32,9 @@ func TestLoadUsesSafeDevelopmentDefaults(t *testing.T) {
 	}
 	if cfg.InventoryServiceURL != defaultInventoryServiceURL {
 		t.Errorf("InventoryServiceURL = %q, want %q", cfg.InventoryServiceURL, defaultInventoryServiceURL)
+	}
+	if cfg.InventoryTimeout != 3*time.Second {
+		t.Errorf("InventoryTimeout = %s, want 3s", cfg.InventoryTimeout)
 	}
 }
 
@@ -51,6 +56,7 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{name: "service port", key: "BILLING_SERVICE_PORT", value: "invalid"},
 		{name: "database port", key: "BILLING_DB_PORT", value: "70000"},
 		{name: "inventory URL", key: "INVENTORY_SERVICE_URL", value: "inventory-service"},
+		{name: "inventory timeout", key: "INVENTORY_SERVICE_TIMEOUT", value: "not-a-duration"},
 	}
 
 	for _, test := range tests {

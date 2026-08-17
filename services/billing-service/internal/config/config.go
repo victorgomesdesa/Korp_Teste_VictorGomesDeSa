@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"time"
 )
 
 const (
@@ -15,12 +16,14 @@ const (
 	defaultDBName              = "billing_db"
 	defaultDBUser              = "billing"
 	defaultInventoryServiceURL = "http://localhost:8080"
+	defaultInventoryTimeout    = 3 * time.Second
 )
 
 type Config struct {
 	ServicePort         string
 	Database            DatabaseConfig
 	InventoryServiceURL string
+	InventoryTimeout    time.Duration
 }
 
 type DatabaseConfig struct {
@@ -43,6 +46,12 @@ func Load() (Config, error) {
 		},
 		InventoryServiceURL: valueOrDefault("INVENTORY_SERVICE_URL", defaultInventoryServiceURL),
 	}
+
+	timeout, err := time.ParseDuration(valueOrDefault("INVENTORY_SERVICE_TIMEOUT", defaultInventoryTimeout.String()))
+	if err != nil || timeout <= 0 {
+		return Config{}, errors.New("INVENTORY_SERVICE_TIMEOUT must be a positive duration")
+	}
+	cfg.InventoryTimeout = timeout
 
 	if cfg.Database.Password == "" {
 		return Config{}, errors.New("BILLING_DB_PASSWORD is required")
