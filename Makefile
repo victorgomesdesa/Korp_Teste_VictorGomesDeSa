@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate-inventory-up migrate-inventory-down test-inventory test-inventory-integration
+.PHONY: up down logs migrate-inventory-up migrate-inventory-down migrate-billing-up migrate-billing-down test-inventory test-inventory-integration
 
 up:
 	docker compose up -d
@@ -14,6 +14,12 @@ migrate-inventory-up:
 
 migrate-inventory-down:
 	docker compose run --rm --entrypoint /bin/sh inventory-migrate -c 'migrate -path=/migrations -database "postgres://$${INVENTORY_DB_USER}:$${INVENTORY_DB_PASSWORD}@$${INVENTORY_DB_HOST}:$${INVENTORY_DB_PORT}/$${INVENTORY_DB_NAME}?sslmode=disable" down -all'
+
+migrate-billing-up:
+	docker compose run --rm --entrypoint /bin/sh billing-migrate -c 'migrate -path=/migrations -database "postgres://$${BILLING_DB_USER}:$${BILLING_DB_PASSWORD}@$${BILLING_DB_HOST}:$${BILLING_DB_PORT}/$${BILLING_DB_NAME}?sslmode=disable" up'
+
+migrate-billing-down:
+	docker compose run --rm --entrypoint /bin/sh billing-migrate -c 'migrate -path=/migrations -database "postgres://$${BILLING_DB_USER}:$${BILLING_DB_PASSWORD}@$${BILLING_DB_HOST}:$${BILLING_DB_PORT}/$${BILLING_DB_NAME}?sslmode=disable" down -all'
 
 test-inventory:
 	docker run --rm -v "$(CURDIR)/services/inventory-service:/app" -w /app golang:1.25-alpine go test ./...
