@@ -187,3 +187,57 @@ func resetInvoices(t *testing.T, pool *pgxpool.Pool) {
 		t.Fatalf("reset invoice number sequence: %v", err)
 	}
 }
+
+func TestInvoiceRepositoryReportsEveryCloseOperationUniqueViolationAsConflict(t *testing.T) {
+	pool := newTestPool(t)
+	repository := postgresrepository.NewInvoiceRepository(pool)
+
+	first, err := repository.Create(context.Background(), invoiceFixture(1, 2))
+	if err != nil {
+		t.Fatalf("create first invoice: %v", err)
+	}
+	second, err := repository.Create(context.Background(), invoiceFixture(1, 2))
+	if err != nil {
+		t.Fatalf("create second invoice: %v", err)
+	}
+	if _, err := repository.CreateCloseOperation(context.Background(), domain.InvoiceCloseOperation{
+		InvoiceID:      first.ID,
+		IdempotencyKey: "key-1",
+		Status:         domain.InvoiceCloseOperationStatusProcessing,
+	}); err != nil {
+		t.Fatalf("create close operation: %v", err)
+	}
+
+	// As duas violações possíveis devem chegar ao service como o mesmo conflito, para que a
+	// classificação dependa do estado persistido e não da ordem de avaliação das constraints.
+	tests := []struct {
+		name           string
+		invoiceID      int64
+		idempotencyKey string
+	}{
+		{name: "same invoice", invoiceID: first.ID, idempotencyKey: "key-2"},
+		{name: "same idempotency key", invoiceID: second.ID, idempotencyKey: "key-1"},
+		{name: "same invoice and key", invoiceID: first.ID, idempotencyKey: "key-1"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := repository.CreateCloseOperation(context.Background(), domain.InvoiceCloseOperation{
+				InvoiceID:      test.invoiceID,
+				IdempotencyKey: test.idempotencyKey,
+				Status:         domain.InvoiceCloseOperationStatusProcessing,
+			})
+			if !errors.Is(err, domain.ErrInvoiceCloseOperationConflict) {
+				t.Fatalf("CreateCloseOperation() error = %v, want close operation conflict", err)
+			}
+		})
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM invoice_close_operations").Scan(&count); err != nil {
+		t.Fatalf("count close operations: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("close operations = %d, want only the original one", count)
+	}
+}

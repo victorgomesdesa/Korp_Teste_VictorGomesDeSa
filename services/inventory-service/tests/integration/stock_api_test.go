@@ -584,3 +584,109 @@ func persistedOperationInvoiceID(t *testing.T, pool *pgxpool.Pool) int64 {
 	}
 	return invoiceID
 }
+
+func TestStockConsumeWithDifferentKeysAreDistinctOperations(t *testing.T) {
+	testAPI := newStockTestAPI(t)
+	productID := insertStockProduct(t, testAPI.pool, "PROD-001", "Teclado Mecânico", 10)
+	payload := fmt.Sprintf(`{"invoiceId":1001,"items":[{"productId":%d,"quantity":2}]}`, productID)
+
+	first := testAPI.consume(t, "key-1", payload)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200; body: %s", first.Code, first.Body.String())
+	}
+
+	// Payload idêntico com outra chave é outra operação lógica: o Inventory não trata como replay.
+	second := testAPI.consume(t, "key-2", payload)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200; body: %s", second.Code, second.Body.String())
+	}
+
+	if balance := productBalance(t, testAPI.pool, productID); balance != 6 {
+		t.Fatalf("balance = %d, want 6 consumed twice", balance)
+	}
+	if count := stockOperationCount(t, testAPI.pool); count != 2 {
+		t.Fatalf("stock operations = %d, want 2", count)
+	}
+}
+
+func TestStockConsumeConcurrentMultiItemRequestsDoNotDeadlock(t *testing.T) {
+	testAPI := newStockTestAPI(t)
+	firstID := insertStockProduct(t, testAPI.pool, "PROD-001", "Teclado Mecânico", 3)
+	secondID := insertStockProduct(t, testAPI.pool, "PROD-002", "Mouse", 3)
+
+	// Os itens chegam em ordens opostas; a canonicalização por productId faz as duas transações
+	// travarem as linhas na mesma ordem.
+	responses := testAPI.consumeConcurrently(t, func(attempt int) (string, string) {
+		if attempt == 0 {
+			return "key-1", fmt.Sprintf(
+				`{"invoiceId":1001,"items":[{"productId":%d,"quantity":1},{"productId":%d,"quantity":1}]}`,
+				firstID,
+				secondID,
+			)
+		}
+		return "key-2", fmt.Sprintf(
+			`{"invoiceId":1002,"items":[{"productId":%d,"quantity":1},{"productId":%d,"quantity":1}]}`,
+			secondID,
+			firstID,
+		)
+	})
+
+	for attempt, response := range responses {
+		if response.Code != http.StatusOK {
+			t.Fatalf("attempt %d status = %d, want 200; body: %s", attempt, response.Code, response.Body.String())
+		}
+	}
+	// Cada operação consome uma unidade dos dois produtos.
+	if balance := productBalance(t, testAPI.pool, firstID); balance != 1 {
+		t.Fatalf("first balance = %d, want 1 after two consumptions", balance)
+	}
+	if balance := productBalance(t, testAPI.pool, secondID); balance != 1 {
+		t.Fatalf("second balance = %d, want 1 after two consumptions", balance)
+	}
+	if count := stockOperationCount(t, testAPI.pool); count != 2 {
+		t.Fatalf("stock operations = %d, want 2", count)
+	}
+}
+
+func TestStockConsumeConcurrentMultiItemRollbackLeavesNoPartialConsumption(t *testing.T) {
+	testAPI := newStockTestAPI(t)
+	firstID := insertStockProduct(t, testAPI.pool, "PROD-001", "Teclado Mecânico", 2)
+	secondID := insertStockProduct(t, testAPI.pool, "PROD-003", "Monitor", 1)
+
+	// Ambas as operações pedem os dois produtos, mas só há saldo do segundo para uma delas.
+	responses := testAPI.consumeConcurrently(t, func(attempt int) (string, string) {
+		return "key-" + strconv.Itoa(attempt), fmt.Sprintf(
+			`{"invoiceId":100%d,"items":[{"productId":%d,"quantity":1},{"productId":%d,"quantity":1}]}`,
+			attempt,
+			firstID,
+			secondID,
+		)
+	})
+
+	consumed, rejected := 0, 0
+	for _, response := range responses {
+		switch response.Code {
+		case http.StatusOK:
+			consumed++
+		case http.StatusConflict:
+			rejected++
+			assertError(t, response, http.StatusConflict, "INSUFFICIENT_STOCK")
+		default:
+			t.Fatalf("unexpected status = %d; body: %s", response.Code, response.Body.String())
+		}
+	}
+	if consumed != 1 || rejected != concurrentConsumeAttempts-1 {
+		t.Fatalf("consumed=%d rejected=%d, want exactly one consumption", consumed, rejected)
+	}
+
+	// A operação recusada não pode deixar o primeiro produto parcialmente consumido.
+	if balance := productBalance(t, testAPI.pool, firstID); balance != 1 {
+		t.Fatalf("first balance = %d, want 1 consumed only by the winner", balance)
+	}
+	if balance := productBalance(t, testAPI.pool, secondID); balance != 0 {
+		t.Fatalf("second balance = %d, want 0", balance)
+	}
+	if count := stockOperationCount(t, testAPI.pool); count != 1 {
+		t.Fatalf("stock operations = %d, want 1", count)
+	}
+}

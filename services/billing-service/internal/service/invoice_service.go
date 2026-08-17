@@ -113,9 +113,13 @@ func (s *InvoiceService) acquireClose(
 		Status:         domain.InvoiceCloseOperationStatusProcessing,
 	})
 	// A UNIQUE(invoice_id) decide qual requisição assume o fechamento; a perdedora reclassifica a
-	// operação vencedora em vez de tratar o conflito como erro.
+	// operação vencedora pelo estado persistido. Sem operação para esta nota, a violação veio da
+	// chave já associada a outra nota.
 	if errors.Is(err, domain.ErrInvoiceCloseOperationConflict) {
 		operation, findErr := s.repository.FindCloseOperation(ctx, invoice.ID)
+		if errors.Is(findErr, domain.ErrInvoiceCloseOperationNotFound) {
+			return domain.Invoice{}, domain.ErrIdempotencyKeyReused
+		}
 		if findErr != nil {
 			return domain.Invoice{}, findErr
 		}

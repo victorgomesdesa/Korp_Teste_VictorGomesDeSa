@@ -13,11 +13,6 @@ import (
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/domain"
 )
 
-const (
-	invoiceCloseOperationInvoiceConstraint = "invoice_close_operations_invoice_unique"
-	invoiceCloseOperationKeyConstraint     = "invoice_close_operations_idempotency_key_unique"
-)
-
 type invoiceCloseOperationResult struct {
 	InvoiceID int64                `json:"invoiceId"`
 	Status    domain.InvoiceStatus `json:"status"`
@@ -224,14 +219,11 @@ func (r *InvoiceRepository) CreateCloseOperation(ctx context.Context, operation 
 		&operation.CreatedAt,
 		&operation.CompletedAt,
 	); err != nil {
+		// Qualquer violação de unicidade significa que outra operação já ocupa a nota ou a chave. A
+		// classificação vem do estado persistido, não de qual constraint o PostgreSQL avaliou primeiro.
 		var postgresError *pgconn.PgError
 		if errors.As(err, &postgresError) && postgresError.Code == "23505" {
-			switch postgresError.ConstraintName {
-			case invoiceCloseOperationInvoiceConstraint:
-				return domain.InvoiceCloseOperation{}, domain.ErrInvoiceCloseOperationConflict
-			case invoiceCloseOperationKeyConstraint:
-				return domain.InvoiceCloseOperation{}, domain.ErrIdempotencyKeyReused
-			}
+			return domain.InvoiceCloseOperation{}, domain.ErrInvoiceCloseOperationConflict
 		}
 		return domain.InvoiceCloseOperation{}, fmt.Errorf("insert invoice close operation: %w", err)
 	}

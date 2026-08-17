@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -137,27 +138,12 @@ func TestOnlineCloseWithConcurrentKeysKeepsASingleOperation(t *testing.T) {
 	product := environment.createProduct(t, "PROD-E2E-001", "Teclado Mecânico", 10)
 	invoice := environment.createInvoice(t, fmt.Sprintf(`{"items":[{"productId":%d,"quantity":2}]}`, product.ID))
 
-	keys := []string{"key-a", "key-b"}
-	start := make(chan struct{})
-	responses := make([]*http.Response, len(keys))
-	failures := make([]error, len(keys))
-	var attempts sync.WaitGroup
-	attempts.Add(len(keys))
-	for index, key := range keys {
-		go func(index int, key string) {
-			defer attempts.Done()
-			<-start
-			responses[index], failures[index] = environment.sendClose(invoice.ID, key)
-		}(index, key)
-	}
-	close(start)
-	attempts.Wait()
+	responses := environment.closeConcurrently(t, func(attempt int) (int64, string) {
+		return invoice.ID, "key-" + strconv.Itoa(attempt)
+	})
 
 	closed, rejected := 0, 0
-	for index, response := range responses {
-		if failures[index] != nil {
-			t.Fatalf("close request %d failed: %v", index, failures[index])
-		}
+	for _, response := range responses {
 		switch response.StatusCode {
 		case http.StatusOK:
 			closed++
@@ -175,7 +161,7 @@ func TestOnlineCloseWithConcurrentKeysKeepsASingleOperation(t *testing.T) {
 			assertStatus(t, response, http.StatusOK)
 		}
 	}
-	if closed != 1 || rejected != len(keys)-1 {
+	if closed != 1 || rejected != concurrentCloseAttempts-1 {
 		t.Fatalf("closed=%d rejected=%d, want a single effective closure", closed, rejected)
 	}
 
@@ -455,26 +441,12 @@ func TestOnlineConcurrentRecoveriesKeepASingleClosure(t *testing.T) {
 	invoice := environment.createInvoice(t, fmt.Sprintf(`{"items":[{"productId":%d,"quantity":2}]}`, product.ID))
 	environment.simulateLostCloseResponse(t, invoice.ID, product.ID, "key-1")
 
-	start := make(chan struct{})
-	responses := make([]*http.Response, concurrentCloseAttempts)
-	failures := make([]error, concurrentCloseAttempts)
-	var attempts sync.WaitGroup
-	attempts.Add(concurrentCloseAttempts)
-	for attempt := 0; attempt < concurrentCloseAttempts; attempt++ {
-		go func(attempt int) {
-			defer attempts.Done()
-			<-start
-			responses[attempt], failures[attempt] = environment.sendClose(invoice.ID, "key-1")
-		}(attempt)
-	}
-	close(start)
-	attempts.Wait()
+	responses := environment.closeConcurrently(t, func(int) (int64, string) {
+		return invoice.ID, "key-1"
+	})
 
 	closedAt := make([]time.Time, 0, concurrentCloseAttempts)
 	for attempt, response := range responses {
-		if failures[attempt] != nil {
-			t.Fatalf("recovery %d failed: %v", attempt, failures[attempt])
-		}
 		assertStatus(t, response, http.StatusOK)
 		var recovered dto.InvoiceResponse
 		decodeResponse(t, response, &recovered)
@@ -554,5 +526,178 @@ func (environment *e2eEnvironment) seedProcessingOperation(t *testing.T, invoice
 		idempotencyKey,
 	); err != nil {
 		t.Fatalf("seed processing close operation: %v", err)
+	}
+}
+
+func TestOnlineConcurrentInvoicesConsumeTheLastUnitOnce(t *testing.T) {
+	environment := newE2EEnvironment(t, true)
+	product := environment.createProduct(t, "PROD-E2E-003", "Monitor", 1)
+	items := fmt.Sprintf(`{"items":[{"productId":%d,"quantity":1}]}`, product.ID)
+	invoices := []dto.InvoiceResponse{
+		environment.createInvoice(t, items),
+		environment.createInvoice(t, items),
+	}
+
+	responses := environment.closeConcurrently(t, func(attempt int) (int64, string) {
+		return invoices[attempt].ID, "key-" + strconv.Itoa(attempt)
+	})
+
+	closed, rejected := 0, 0
+	for _, response := range responses {
+		switch response.StatusCode {
+		case http.StatusOK:
+			closed++
+			var invoiceResponse dto.InvoiceResponse
+			decodeResponse(t, response, &invoiceResponse)
+			if invoiceResponse.Status != "CLOSED" || invoiceResponse.ClosedAt == nil {
+				t.Fatalf("winning invoice = %+v", invoiceResponse)
+			}
+		case http.StatusConflict:
+			rejected++
+			assertErrorResponse(t, response, http.StatusConflict, "INSUFFICIENT_STOCK")
+		default:
+			assertStatus(t, response, http.StatusOK)
+		}
+	}
+	if closed != 1 || rejected != concurrentCloseAttempts-1 {
+		t.Fatalf("closed=%d rejected=%d, want exactly one closure", closed, rejected)
+	}
+
+	if balance := environment.getProduct(t, product.ID).Balance; balance != 0 {
+		t.Fatalf("product balance = %d, want 0 and never negative", balance)
+	}
+	if count := stockOperationCount(t, environment.inventoryDB); count != 1 {
+		t.Fatalf("stock operations = %d, want 1", count)
+	}
+	if count := closeOperationCount(t, environment.billingDB); count != 1 {
+		t.Fatalf("close operations = %d, want only the winning one", count)
+	}
+
+	// A nota vencedora fecha; a perdedora permanece OPEN e livre para uma nova tentativa.
+	winnerID := persistedCloseOperationInvoiceID(t, environment.billingDB)
+	assertCloseOperation(t, environment.billingDB, winnerID, "key-"+winnerAttempt(t, invoices, winnerID), "COMPLETED")
+	for _, invoice := range invoices {
+		status, closedAt := invoiceState(t, environment.billingDB, invoice.ID)
+		if invoice.ID == winnerID {
+			if status != "CLOSED" || closedAt == nil {
+				t.Fatalf("winner invoice %d: status=%s closedAt=%v", invoice.ID, status, closedAt)
+			}
+			continue
+		}
+		if status != "OPEN" || closedAt != nil {
+			t.Fatalf("loser invoice %d: status=%s closedAt=%v, want OPEN", invoice.ID, status, closedAt)
+		}
+	}
+}
+
+func TestOnlineConcurrentCloseWithSameKeyClosesInvoiceOnce(t *testing.T) {
+	environment := newE2EEnvironment(t, true)
+	product := environment.createProduct(t, "PROD-E2E-001", "Teclado Mecânico", 10)
+	invoice := environment.createInvoice(t, fmt.Sprintf(`{"items":[{"productId":%d,"quantity":2}]}`, product.ID))
+
+	responses := environment.closeConcurrently(t, func(int) (int64, string) {
+		return invoice.ID, "key-1"
+	})
+
+	closedAt := make([]time.Time, 0, concurrentCloseAttempts)
+	for attempt, response := range responses {
+		assertStatus(t, response, http.StatusOK)
+		var closed dto.InvoiceResponse
+		decodeResponse(t, response, &closed)
+		if closed.Status != "CLOSED" || closed.ClosedAt == nil {
+			t.Fatalf("attempt %d response = %+v", attempt, closed)
+		}
+		closedAt = append(closedAt, *closed.ClosedAt)
+	}
+	if !closedAt[0].Equal(closedAt[1]) {
+		t.Fatalf("closedAt = %v and %v, want a single closure timestamp", closedAt[0], closedAt[1])
+	}
+
+	if balance := environment.getProduct(t, product.ID).Balance; balance != 8 {
+		t.Fatalf("product balance = %d, want 8 consumed once", balance)
+	}
+	assertCloseOperation(t, environment.billingDB, invoice.ID, "key-1", "COMPLETED")
+	if count := closeOperationCount(t, environment.billingDB); count != 1 {
+		t.Fatalf("close operations = %d, want 1", count)
+	}
+	if count := stockOperationCount(t, environment.inventoryDB); count != 1 {
+		t.Fatalf("stock operations = %d, want 1", count)
+	}
+}
+
+func (environment *e2eEnvironment) closeConcurrently(
+	t *testing.T,
+	requestOf func(attempt int) (int64, string),
+) []*http.Response {
+	t.Helper()
+	start := make(chan struct{})
+	responses := make([]*http.Response, concurrentCloseAttempts)
+	failures := make([]error, concurrentCloseAttempts)
+	var attempts sync.WaitGroup
+	attempts.Add(concurrentCloseAttempts)
+	for attempt := 0; attempt < concurrentCloseAttempts; attempt++ {
+		go func(attempt int) {
+			defer attempts.Done()
+			invoiceID, idempotencyKey := requestOf(attempt)
+			<-start
+			responses[attempt], failures[attempt] = environment.sendClose(invoiceID, idempotencyKey)
+		}(attempt)
+	}
+	close(start)
+	attempts.Wait()
+
+	for attempt, err := range failures {
+		if err != nil {
+			t.Fatalf("close attempt %d failed: %v", attempt, err)
+		}
+	}
+	return responses
+}
+
+func persistedCloseOperationInvoiceID(t *testing.T, pool *pgxpool.Pool) int64 {
+	t.Helper()
+	var invoiceID int64
+	if err := pool.QueryRow(context.Background(), "SELECT invoice_id FROM invoice_close_operations").Scan(&invoiceID); err != nil {
+		t.Fatalf("query persisted close operation: %v", err)
+	}
+	return invoiceID
+}
+
+func winnerAttempt(t *testing.T, invoices []dto.InvoiceResponse, winnerID int64) string {
+	t.Helper()
+	for attempt, invoice := range invoices {
+		if invoice.ID == winnerID {
+			return strconv.Itoa(attempt)
+		}
+	}
+	t.Fatalf("close operation references unknown invoice %d", winnerID)
+	return ""
+}
+
+func TestOnlineCloseRejectsKeyAlreadyUsedByAnotherInvoice(t *testing.T) {
+	environment := newE2EEnvironment(t, true)
+	product := environment.createProduct(t, "PROD-E2E-001", "Teclado Mecânico", 10)
+	items := fmt.Sprintf(`{"items":[{"productId":%d,"quantity":2}]}`, product.ID)
+	first := environment.createInvoice(t, items)
+	second := environment.createInvoice(t, items)
+
+	assertStatus(t, environment.closeInvoice(t, first.ID, "key-1"), http.StatusOK)
+
+	// A chave já pertence à primeira nota: a segunda não pode assumi-la nem consumir estoque.
+	reused := environment.closeInvoice(t, second.ID, "key-1")
+	assertErrorResponse(t, reused, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED")
+
+	if balance := environment.getProduct(t, product.ID).Balance; balance != 8 {
+		t.Fatalf("product balance = %d, want 8 consumed only by the first invoice", balance)
+	}
+	status, closedAt := invoiceState(t, environment.billingDB, second.ID)
+	if status != "OPEN" || closedAt != nil {
+		t.Fatalf("second invoice status=%s closedAt=%v, want OPEN", status, closedAt)
+	}
+	if count := closeOperationCount(t, environment.billingDB); count != 1 {
+		t.Fatalf("close operations = %d, want only the first invoice operation", count)
+	}
+	if count := stockOperationCount(t, environment.inventoryDB); count != 1 {
+		t.Fatalf("stock operations = %d, want 1", count)
 	}
 }
