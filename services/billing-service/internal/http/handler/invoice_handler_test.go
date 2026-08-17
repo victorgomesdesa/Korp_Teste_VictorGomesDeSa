@@ -73,6 +73,11 @@ func TestInvoiceHandlerCreate(t *testing.T) {
 			if response.Code != test.status {
 				t.Fatalf("status = %d, want %d; body=%s", response.Code, test.status, response.Body.String())
 			}
+			for _, forbidden := range []string{"stack trace", "SELECT ", "connection refused", "dial tcp"} {
+				if bytes.Contains(response.Body.Bytes(), []byte(forbidden)) {
+					t.Fatalf("response leaked internal detail %q: %s", forbidden, response.Body.String())
+				}
+			}
 			if test.code != "" {
 				var body struct {
 					Code string `json:"code"`

@@ -20,7 +20,11 @@ func TestInvoiceRepositoryPersistsInvoiceAndItemsWithDatabaseValues(t *testing.T
 	pool := newTestPool(t)
 	repository := postgresrepository.NewInvoiceRepository(pool)
 
-	first, err := repository.Create(context.Background(), invoiceFixture(1, 2))
+	firstFixture := invoiceFixture(1, 2)
+	firstFixture.Items = append(firstFixture.Items, domain.InvoiceItem{
+		ProductID: 2, ProductCode: "PROD-002", ProductDescription: "Mouse", Quantity: 1,
+	})
+	first, err := repository.Create(context.Background(), firstFixture)
 	if err != nil {
 		t.Fatalf("create first invoice: %v", err)
 	}
@@ -35,7 +39,7 @@ func TestInvoiceRepositoryPersistsInvoiceAndItemsWithDatabaseValues(t *testing.T
 	if second.Number <= first.Number {
 		t.Fatalf("numbers = %d, %d; want second greater than first", first.Number, second.Number)
 	}
-	if len(first.Items) != 1 || first.Items[0].ID == 0 || first.Items[0].InvoiceID != first.ID {
+	if len(first.Items) != 2 || first.Items[0].ID == 0 || first.Items[0].InvoiceID != first.ID || first.Items[1].InvoiceID != first.ID {
 		t.Fatalf("persisted item does not reference invoice: %+v", first.Items)
 	}
 	if first.Items[0].ProductCode != "PROD-001" || first.Items[0].ProductDescription != "Teclado Mecânico" {
@@ -49,8 +53,8 @@ func TestInvoiceRepositoryPersistsInvoiceAndItemsWithDatabaseValues(t *testing.T
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM invoice_items").Scan(&itemCount); err != nil {
 		t.Fatalf("count items: %v", err)
 	}
-	if invoiceCount != 2 || itemCount != 2 {
-		t.Fatalf("persisted invoices=%d items=%d, want 2 and 2", invoiceCount, itemCount)
+	if invoiceCount != 2 || itemCount != 3 {
+		t.Fatalf("persisted invoices=%d items=%d, want 2 and 3", invoiceCount, itemCount)
 	}
 }
 

@@ -93,6 +93,9 @@ func TestInvoiceServiceCreatesInvoiceWithInventorySnapshots(t *testing.T) {
 	if repository.created.Status != domain.InvoiceStatusOpen {
 		t.Fatalf("status = %q, want OPEN", repository.created.Status)
 	}
+	if repository.created.ClosedAt != nil {
+		t.Fatalf("closedAt = %v, want nil", repository.created.ClosedAt)
+	}
 }
 
 func TestInvoiceServiceRejectsInvalidInputBeforeDependencies(t *testing.T) {

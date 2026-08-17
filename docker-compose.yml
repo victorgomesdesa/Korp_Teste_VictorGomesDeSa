@@ -75,6 +75,28 @@ services:
     volumes:
       - ./services/inventory-service:/app
 
+  inventory-test-service:
+    build:
+      context: ./services/inventory-service
+      dockerfile: Dockerfile
+    profiles:
+      - test
+    environment:
+      INVENTORY_SERVICE_PORT: 8080
+      INVENTORY_DB_HOST: inventory-test-db
+      INVENTORY_DB_PORT: 5432
+      INVENTORY_DB_NAME: ${INVENTORY_TEST_DB_NAME:-inventory_test_db}
+      INVENTORY_DB_USER: ${INVENTORY_DB_USER:-inventory}
+      INVENTORY_DB_PASSWORD: ${INVENTORY_DB_PASSWORD:-inventory_local}
+    depends_on:
+      inventory-test-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/health >/dev/null"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
   billing-db:
     image: postgres:16-alpine
     environment:
@@ -123,6 +145,62 @@ services:
         condition: service_healthy
     volumes:
       - ./services/billing-service/migrations:/migrations:ro
+
+  billing-test-db:
+    image: postgres:16-alpine
+    profiles:
+      - test
+    environment:
+      POSTGRES_DB: ${BILLING_TEST_DB_NAME:-billing_test_db}
+      POSTGRES_USER: ${BILLING_DB_USER:-billing}
+      POSTGRES_PASSWORD: ${BILLING_DB_PASSWORD:-billing_local}
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  billing-test-runner:
+    image: golang:1.25
+    profiles:
+      - test
+    working_dir: /app
+    environment:
+      BILLING_INTEGRATION_TEST_DATABASE_URL: postgres://${BILLING_DB_USER:-billing}:${BILLING_DB_PASSWORD:-billing_local}@billing-test-db:5432/${BILLING_TEST_DB_NAME:-billing_test_db}?sslmode=disable
+      INVENTORY_INTEGRATION_TEST_DATABASE_URL: postgres://${INVENTORY_DB_USER:-inventory}:${INVENTORY_DB_PASSWORD:-inventory_local}@inventory-test-db:5432/${INVENTORY_TEST_DB_NAME:-inventory_test_db}?sslmode=disable
+      BILLING_E2E_URL: http://billing-test-service:8081
+      INVENTORY_E2E_URL: http://inventory-test-service:8080
+    depends_on:
+      billing-test-db:
+        condition: service_healthy
+    volumes:
+      - ./services/billing-service:/app
+
+  billing-test-service:
+    build:
+      context: ./services/billing-service
+      dockerfile: Dockerfile
+    profiles:
+      - test
+    environment:
+      BILLING_SERVICE_PORT: 8081
+      BILLING_DB_HOST: billing-test-db
+      BILLING_DB_PORT: 5432
+      BILLING_DB_NAME: ${BILLING_TEST_DB_NAME:-billing_test_db}
+      BILLING_DB_USER: ${BILLING_DB_USER:-billing}
+      BILLING_DB_PASSWORD: ${BILLING_DB_PASSWORD:-billing_local}
+      INVENTORY_SERVICE_URL: http://inventory-test-service:8080
+      INVENTORY_SERVICE_TIMEOUT: 100ms
+    depends_on:
+      billing-test-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8081/health >/dev/null"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
 
 volumes:
   inventory-db-data:
