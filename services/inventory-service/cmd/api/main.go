@@ -15,6 +15,8 @@ import (
 	httpapi "github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/inventory-service/internal/http"
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/inventory-service/internal/platform/database"
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/inventory-service/internal/platform/logger"
+	postgresrepository "github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/inventory-service/internal/repository/postgres"
+	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/inventory-service/internal/service"
 )
 
 const (
@@ -50,9 +52,12 @@ func run() error {
 	}
 	defer pool.Close()
 
+	productRepository := postgresrepository.NewProductRepository(pool)
+	productService := service.NewProductService(productRepository)
+
 	server := &http.Server{
 		Addr:              ":" + cfg.ServicePort,
-		Handler:           httpapi.NewRouter(appLogger, pool),
+		Handler:           httpapi.NewRouter(appLogger, pool, productService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
