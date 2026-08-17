@@ -40,11 +40,11 @@ func (stub productUseCaseStub) FindByID(context.Context, int64) (domain.Product,
 func TestProductHandlerCreateReturnsCreatedProduct(t *testing.T) {
 	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
 	useCase := productUseCaseStub{createProduct: domain.Product{
-		ID: 1, Code: "PROD-001", Description: "Teclado", Balance: 10, CreatedAt: now, UpdatedAt: now,
+		ID: 1, Code: "PROD-005", Description: "Webcam", Balance: 3, CreatedAt: now, UpdatedAt: now,
 	}}
 	router := productHandlerTestRouter(useCase)
 
-	response := performProductRequest(router, http.MethodPost, "/api/products", `{"code":"PROD-001","description":"Teclado","balance":10}`)
+	response := performProductRequest(router, http.MethodPost, "/api/products", `{"code":"PROD-005","description":"Webcam","balance":3}`)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d; body: %s", response.Code, http.StatusCreated, response.Body.String())
 	}
@@ -53,28 +53,33 @@ func TestProductHandlerCreateReturnsCreatedProduct(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &product); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if product.ID != 1 || product.Code != "PROD-001" || product.Balance != 10 {
+	if product.ID != 1 || product.Code != "PROD-005" || product.Description != "Webcam" || product.Balance != 3 {
 		t.Fatalf("response product = %+v", product)
 	}
 }
 
-func TestProductHandlerCreateMapsControlledErrors(t *testing.T) {
-	tests := []struct {
-		name       string
-		err        error
-		wantStatus int
-		wantCode   string
-	}{
-		{name: "validation", err: &domain.ValidationError{Field: "code"}, wantStatus: http.StatusUnprocessableEntity, wantCode: "VALIDATION_ERROR"},
-		{name: "duplicate code", err: domain.ErrProductCodeAlreadyExists, wantStatus: http.StatusConflict, wantCode: "PRODUCT_CODE_ALREADY_EXISTS"},
-	}
+func TestProductHandlerCreateMapsDuplicateCode(t *testing.T) {
+	router := productHandlerTestRouter(productUseCaseStub{createErr: domain.ErrProductCodeAlreadyExists})
+	response := performProductRequest(router, http.MethodPost, "/api/products", `{"code":"PROD-001","description":"Produto","balance":1}`)
+	assertErrorResponse(t, response, http.StatusConflict, "PRODUCT_CODE_ALREADY_EXISTS")
+}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			router := productHandlerTestRouter(productUseCaseStub{createErr: test.err})
-			response := performProductRequest(router, http.MethodPost, "/api/products", `{"code":"PROD-001","description":"Produto","balance":1}`)
-			assertErrorResponse(t, response, test.wantStatus, test.wantCode)
-		})
+func TestProductHandlerCreateRejectsNegativeBalance(t *testing.T) {
+	router := productHandlerTestRouter(productUseCaseStub{
+		createErr: &domain.ValidationError{Field: "balance"},
+	})
+
+	response := performProductRequest(router, http.MethodPost, "/api/products", `{"code":"PROD-005","description":"Webcam","balance":-1}`)
+	assertErrorResponse(t, response, http.StatusUnprocessableEntity, "VALIDATION_ERROR")
+}
+
+func TestProductHandlerCreateRejectsMalformedJSONWithoutPanic(t *testing.T) {
+	router := productHandlerTestRouter(productUseCaseStub{})
+
+	response := performProductRequest(router, http.MethodPost, "/api/products", `{"code":`)
+	assertErrorResponse(t, response, http.StatusBadRequest, "INVALID_REQUEST")
+	if bytes.Contains(response.Body.Bytes(), []byte("panic")) || bytes.Contains(response.Body.Bytes(), []byte("goroutine")) {
+		t.Fatalf("response exposed runtime details: %s", response.Body.String())
 	}
 }
 

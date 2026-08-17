@@ -28,15 +28,15 @@ func (stub productRepositoryStub) FindByID(ctx context.Context, id int64) (domai
 }
 
 func TestProductServiceCreateNormalizesAndCreatesValidProduct(t *testing.T) {
-	balance := int64(10)
+	balance := int64(3)
 	repositoryCalled := false
 	productRepository := productRepositoryStub{
 		createFunc: func(_ context.Context, product domain.Product) (domain.Product, error) {
 			repositoryCalled = true
-			if product.Code != "PROD-001" {
+			if product.Code != "PROD-005" {
 				t.Errorf("Code = %q, want normalized code", product.Code)
 			}
-			if product.Description != "Teclado Mecânico" {
+			if product.Description != "Webcam" {
 				t.Errorf("Description = %q, want normalized description", product.Description)
 			}
 			product.ID = 1
@@ -45,8 +45,8 @@ func TestProductServiceCreateNormalizesAndCreatesValidProduct(t *testing.T) {
 	}
 
 	product, err := NewProductService(productRepository).Create(context.Background(), CreateProductInput{
-		Code:        "  PROD-001  ",
-		Description: "  Teclado Mecânico  ",
+		Code:        "  PROD-005  ",
+		Description: "  Webcam  ",
 		Balance:     &balance,
 	})
 	if err != nil {
@@ -67,8 +67,10 @@ func TestProductServiceCreateRejectsInvalidInput(t *testing.T) {
 		name  string
 		input CreateProductInput
 	}{
-		{name: "empty code", input: CreateProductInput{Code: "  ", Description: "Produto", Balance: &zero}},
-		{name: "empty description", input: CreateProductInput{Code: "PROD-001", Description: "\t", Balance: &zero}},
+		{name: "empty code", input: CreateProductInput{Code: "", Description: "Produto", Balance: &zero}},
+		{name: "whitespace code", input: CreateProductInput{Code: "   ", Description: "Produto", Balance: &zero}},
+		{name: "empty description", input: CreateProductInput{Code: "PROD-001", Description: "", Balance: &zero}},
+		{name: "whitespace description", input: CreateProductInput{Code: "PROD-001", Description: "   ", Balance: &zero}},
 		{name: "missing balance", input: CreateProductInput{Code: "PROD-001", Description: "Produto"}},
 		{name: "negative balance", input: CreateProductInput{Code: "PROD-001", Description: "Produto", Balance: &negative}},
 	}
