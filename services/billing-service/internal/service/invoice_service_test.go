@@ -61,6 +61,9 @@ func (stub *invoiceRepositoryStub) FindCloseOperation(_ context.Context, _ int64
 	if stub.findCloseErr != nil {
 		return domain.InvoiceCloseOperation{}, stub.findCloseErr
 	}
+	if stub.closeOperation.InvoiceID == 0 {
+		return domain.InvoiceCloseOperation{}, domain.ErrInvoiceCloseOperationNotFound
+	}
 	return stub.closeOperation, nil
 }
 
@@ -87,13 +90,22 @@ func (stub *invoiceRepositoryStub) CompleteClose(_ context.Context, _ int64) err
 	stub.calls++
 	stub.completeCloseCalls++
 	if stub.completeCloseErr != nil {
+		// A nota já fechada significa que outra tentativa concluiu a mesma operação lógica antes.
+		if errors.Is(stub.completeCloseErr, domain.ErrInvoiceAlreadyClosed) {
+			stub.closeInvoice()
+			stub.closeOperation.Status = domain.InvoiceCloseOperationStatusCompleted
+		}
 		return stub.completeCloseErr
 	}
 
+	stub.closeInvoice()
+	return nil
+}
+
+func (stub *invoiceRepositoryStub) closeInvoice() {
 	closedAt := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
 	stub.found.Status = domain.InvoiceStatusClosed
 	stub.found.ClosedAt = &closedAt
-	return nil
 }
 
 type productClientStub struct {
@@ -433,33 +445,28 @@ func TestInvoiceServiceCloseRejectsClosedInvoice(t *testing.T) {
 func TestInvoiceServiceCloseRejectsCompetingOperation(t *testing.T) {
 	tests := []struct {
 		name           string
-		idempotencyKey string
-		operation      domain.InvoiceCloseOperation
+		createCloseErr error
 	}{
-		{
-			name:           "second key",
-			idempotencyKey: "key-2",
-			operation:      domain.InvoiceCloseOperation{InvoiceID: 10, IdempotencyKey: "key-1", Status: domain.InvoiceCloseOperationStatusProcessing},
-		},
-		{
-			name:           "same key still processing",
-			idempotencyKey: "key-1",
-			operation:      domain.InvoiceCloseOperation{InvoiceID: 10, IdempotencyKey: "key-1", Status: domain.InvoiceCloseOperationStatusProcessing},
-		},
+		{name: "operation already associated"},
+		{name: "lost the acquisition race", createCloseErr: domain.ErrInvoiceCloseOperationConflict},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			repository := &invoiceRepositoryStub{
 				found:          openInvoiceFixture(),
-				createCloseErr: domain.ErrInvoiceCloseOperationConflict,
-				closeOperation: test.operation,
+				createCloseErr: test.createCloseErr,
+				closeOperation: domain.InvoiceCloseOperation{
+					InvoiceID:      10,
+					IdempotencyKey: "key-1",
+					Status:         domain.InvoiceCloseOperationStatusProcessing,
+				},
 			}
 			client := &productClientStub{}
 
 			_, err := NewInvoiceService(repository, client).Close(context.Background(), CloseInvoiceInput{
 				InvoiceID:      10,
-				IdempotencyKey: test.idempotencyKey,
+				IdempotencyKey: "key-2",
 			})
 			if !errors.Is(err, domain.ErrInvoiceCloseAlreadyInProgress) {
 				t.Fatalf("Close() error = %v, want close already in progress", err)
@@ -572,4 +579,154 @@ func closedInvoiceFixture() domain.Invoice {
 	invoice.Status = domain.InvoiceStatusClosed
 	invoice.ClosedAt = &closedAt
 	return invoice
+}
+
+func TestInvoiceServiceCloseResumesProcessingOperationWithSameKey(t *testing.T) {
+	repository := &invoiceRepositoryStub{
+		found: openInvoiceFixture(),
+		closeOperation: domain.InvoiceCloseOperation{
+			ID:             1,
+			InvoiceID:      10,
+			IdempotencyKey: "key-1",
+			Status:         domain.InvoiceCloseOperationStatusProcessing,
+		},
+	}
+	client := &productClientStub{consumption: inventory.StockConsumption{InvoiceID: 10, Status: "CONSUMED"}}
+
+	invoice, err := NewInvoiceService(repository, client).Close(context.Background(), CloseInvoiceInput{
+		InvoiceID:      10,
+		IdempotencyKey: "key-1",
+	})
+	if err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if repository.createdCloseOperation.InvoiceID != 0 {
+		t.Fatalf("created a second close operation: %+v", repository.createdCloseOperation)
+	}
+	if client.consumeCalls != 1 || client.consumeKey != "key-1" || client.consumeRequest.InvoiceID != 10 {
+		t.Fatalf("Inventory retry = %d calls with key %q for invoice %d", client.consumeCalls, client.consumeKey, client.consumeRequest.InvoiceID)
+	}
+	if !reflect.DeepEqual(client.consumeRequest.Items, []inventory.ConsumeStockItem{
+		{ProductID: 1, Quantity: 2},
+		{ProductID: 2, Quantity: 1},
+	}) {
+		t.Fatalf("Inventory items = %+v, want the persisted invoice items", client.consumeRequest.Items)
+	}
+	if repository.completeCloseCalls != 1 || invoice.Status != domain.InvoiceStatusClosed || invoice.ClosedAt == nil {
+		t.Fatalf("recovered invoice = %+v after %d completions", invoice, repository.completeCloseCalls)
+	}
+}
+
+func TestInvoiceServiceCloseRecoversAfterLocalFailureFollowingStockConsumption(t *testing.T) {
+	repository := &invoiceRepositoryStub{found: openInvoiceFixture()}
+	client := &productClientStub{consumption: inventory.StockConsumption{InvoiceID: 10, Status: "CONSUMED"}}
+	service := NewInvoiceService(repository, client)
+	input := CloseInvoiceInput{InvoiceID: 10, IdempotencyKey: "key-1"}
+
+	// Primeira tentativa: o Inventory consome, mas o Billing falha antes de concluir localmente.
+	repository.completeCloseErr = errors.New("connection reset by peer")
+	if _, err := service.Close(context.Background(), input); err == nil {
+		t.Fatal("Close() error = nil, want the local failure")
+	}
+	if repository.found.Status != domain.InvoiceStatusOpen || repository.found.ClosedAt != nil {
+		t.Fatalf("invoice = %+v, want OPEN after the local failure", repository.found)
+	}
+	if repository.deletedCloseInvoiceID != 0 {
+		t.Fatal("an ambiguous operation must not be released")
+	}
+
+	// A operação permanece PROCESSING com a chave original e o retry a retoma.
+	repository.completeCloseErr = nil
+	repository.createdCloseOperation = domain.InvoiceCloseOperation{}
+	repository.closeOperation = domain.InvoiceCloseOperation{
+		ID:             1,
+		InvoiceID:      10,
+		IdempotencyKey: "key-1",
+		Status:         domain.InvoiceCloseOperationStatusProcessing,
+	}
+
+	invoice, err := service.Close(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Close() error = %v on the recovery attempt", err)
+	}
+	if repository.createdCloseOperation.InvoiceID != 0 {
+		t.Fatalf("recovery created a second close operation: %+v", repository.createdCloseOperation)
+	}
+	if client.consumeCalls != 2 || client.consumeKey != "key-1" {
+		t.Fatalf("Inventory calls = %d with key %q, want the same key resent", client.consumeCalls, client.consumeKey)
+	}
+	if invoice.Status != domain.InvoiceStatusClosed || invoice.ClosedAt == nil {
+		t.Fatalf("recovered invoice = %+v", invoice)
+	}
+}
+
+func TestInvoiceServiceCloseReplaysWhenAnotherAttemptCompletesFirst(t *testing.T) {
+	repository := &invoiceRepositoryStub{
+		found:            openInvoiceFixture(),
+		completeCloseErr: domain.ErrInvoiceAlreadyClosed,
+		closeOperation: domain.InvoiceCloseOperation{
+			ID:             1,
+			InvoiceID:      10,
+			IdempotencyKey: "key-1",
+			Status:         domain.InvoiceCloseOperationStatusProcessing,
+		},
+	}
+	client := &productClientStub{consumption: inventory.StockConsumption{InvoiceID: 10, Status: "CONSUMED"}}
+
+	invoice, err := NewInvoiceService(repository, client).Close(context.Background(), CloseInvoiceInput{
+		InvoiceID:      10,
+		IdempotencyKey: "key-1",
+	})
+	if err != nil {
+		t.Fatalf("Close() error = %v, want the concurrent closure replayed", err)
+	}
+	if invoice.Status != domain.InvoiceStatusClosed || invoice.ClosedAt == nil {
+		t.Fatalf("replayed invoice = %+v", invoice)
+	}
+	if !invoice.ClosedAt.Equal(time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("closedAt = %v, want the persisted timestamp", invoice.ClosedAt)
+	}
+}
+
+func TestInvoiceServiceCloseHandlesInventoryFailuresDuringRecovery(t *testing.T) {
+	tests := []struct {
+		name         string
+		inventoryErr error
+		want         error
+		wantReleased bool
+	}{
+		{name: "insufficient stock", inventoryErr: inventory.ErrInsufficientStock, want: domain.ErrInsufficientStock, wantReleased: true},
+		{name: "product not found", inventoryErr: inventory.ErrProductNotFound, want: domain.ErrProductNotFound, wantReleased: true},
+		{name: "idempotency key reused", inventoryErr: inventory.ErrIdempotencyKeyReused, want: domain.ErrIdempotencyKeyReused},
+		{name: "service unavailable", inventoryErr: inventory.ErrServiceUnavailable, want: domain.ErrInventoryServiceUnavailable},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &invoiceRepositoryStub{
+				found: openInvoiceFixture(),
+				closeOperation: domain.InvoiceCloseOperation{
+					ID:             1,
+					InvoiceID:      10,
+					IdempotencyKey: "key-1",
+					Status:         domain.InvoiceCloseOperationStatusProcessing,
+				},
+			}
+			client := &productClientStub{consumeErr: test.inventoryErr}
+
+			_, err := NewInvoiceService(repository, client).Close(context.Background(), CloseInvoiceInput{
+				InvoiceID:      10,
+				IdempotencyKey: "key-1",
+			})
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Close() error = %v, want %v", err, test.want)
+			}
+			if released := repository.deletedCloseInvoiceID != 0; released != test.wantReleased {
+				t.Fatalf("released = %t, want %t", released, test.wantReleased)
+			}
+			if repository.completeCloseCalls != 0 || repository.found.Status != domain.InvoiceStatusOpen {
+				t.Fatalf("invoice = %+v after %d completions, want OPEN", repository.found, repository.completeCloseCalls)
+			}
+		})
+	}
 }

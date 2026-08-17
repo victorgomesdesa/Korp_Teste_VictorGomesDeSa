@@ -3,6 +3,7 @@
 package e2e_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -14,7 +15,10 @@ import (
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/http/dto"
 )
 
-const idempotencyKeyHeader = "Idempotency-Key"
+const (
+	idempotencyKeyHeader    = "Idempotency-Key"
+	concurrentCloseAttempts = 2
+)
 
 func TestOnlineCloseConsumesStockAndClosesInvoice(t *testing.T) {
 	environment := newE2EEnvironment(t, true)
@@ -360,4 +364,195 @@ func stockOperationCount(t *testing.T, pool *pgxpool.Pool) int {
 		t.Fatalf("count stock operations: %v", err)
 	}
 	return count
+}
+
+func TestOnlineCloseRecoversOperationAfterLostInventoryResponse(t *testing.T) {
+	environment := newE2EEnvironment(t, true)
+	product := environment.createProduct(t, "PROD-E2E-001", "Teclado Mecânico", 10)
+	invoice := environment.createInvoice(t, fmt.Sprintf(`{"items":[{"productId":%d,"quantity":2}]}`, product.ID))
+	environment.simulateLostCloseResponse(t, invoice.ID, product.ID, "key-1")
+
+	if balance := environment.getProduct(t, product.ID).Balance; balance != 8 {
+		t.Fatalf("balance before recovery = %d, want 8 already consumed", balance)
+	}
+	status, closedAt := invoiceState(t, environment.billingDB, invoice.ID)
+	if status != "OPEN" || closedAt != nil {
+		t.Fatalf("invoice before recovery: status=%s closedAt=%v, want OPEN", status, closedAt)
+	}
+	assertCloseOperation(t, environment.billingDB, invoice.ID, "key-1", "PROCESSING")
+	if count := stockOperationCount(t, environment.inventoryDB); count != 1 {
+		t.Fatalf("stock operations before recovery = %d, want 1", count)
+	}
+
+	response := environment.closeInvoice(t, invoice.ID, "key-1")
+	assertStatus(t, response, http.StatusOK)
+	var recovered dto.InvoiceResponse
+	decodeResponse(t, response, &recovered)
+	if recovered.Status != "CLOSED" || recovered.ClosedAt == nil {
+		t.Fatalf("recovered invoice = %+v", recovered)
+	}
+
+	if balance := environment.getProduct(t, product.ID).Balance; balance != 8 {
+		t.Fatalf("balance after recovery = %d, want 8 without a second consumption", balance)
+	}
+	assertCloseOperation(t, environment.billingDB, invoice.ID, "key-1", "COMPLETED")
+	if count := closeOperationCount(t, environment.billingDB); count != 1 {
+		t.Fatalf("close operations = %d, want 1", count)
+	}
+	if count := stockOperationCount(t, environment.inventoryDB); count != 1 {
+		t.Fatalf("stock operations after recovery = %d, want 1", count)
+	}
+
+	// Retry posterior à recuperação: replay puro, sem novo closed_at.
+	replay := environment.closeInvoice(t, invoice.ID, "key-1")
+	assertStatus(t, replay, http.StatusOK)
+	var replayed dto.InvoiceResponse
+	decodeResponse(t, replay, &replayed)
+	if !replayed.ClosedAt.Equal(*recovered.ClosedAt) {
+		t.Fatalf("replayed closedAt = %v, want %v", replayed.ClosedAt, recovered.ClosedAt)
+	}
+	if balance := environment.getProduct(t, product.ID).Balance; balance != 8 {
+		t.Fatalf("balance after replay = %d, want 8", balance)
+	}
+	if count := stockOperationCount(t, environment.inventoryDB); count != 1 {
+		t.Fatalf("stock operations after replay = %d, want 1", count)
+	}
+}
+
+func TestOnlineCloseRecoversOperationWhenInventoryHadNotConsumed(t *testing.T) {
+	environment := newE2EEnvironment(t, true)
+	product := environment.createProduct(t, "PROD-E2E-001", "Teclado Mecânico", 10)
+	invoice := environment.createInvoice(t, fmt.Sprintf(`{"items":[{"productId":%d,"quantity":2}]}`, product.ID))
+	environment.seedProcessingOperation(t, invoice.ID, "key-1")
+
+	if count := stockOperationCount(t, environment.inventoryDB); count != 0 {
+		t.Fatalf("stock operations before recovery = %d, want none", count)
+	}
+
+	response := environment.closeInvoice(t, invoice.ID, "key-1")
+	assertStatus(t, response, http.StatusOK)
+	var recovered dto.InvoiceResponse
+	decodeResponse(t, response, &recovered)
+	if recovered.Status != "CLOSED" || recovered.ClosedAt == nil {
+		t.Fatalf("recovered invoice = %+v", recovered)
+	}
+
+	if balance := environment.getProduct(t, product.ID).Balance; balance != 8 {
+		t.Fatalf("balance = %d, want 8 consumed once", balance)
+	}
+	assertCloseOperation(t, environment.billingDB, invoice.ID, "key-1", "COMPLETED")
+	if count := closeOperationCount(t, environment.billingDB); count != 1 {
+		t.Fatalf("close operations = %d, want 1", count)
+	}
+	if count := stockOperationCount(t, environment.inventoryDB); count != 1 {
+		t.Fatalf("stock operations = %d, want 1", count)
+	}
+}
+
+func TestOnlineConcurrentRecoveriesKeepASingleClosure(t *testing.T) {
+	environment := newE2EEnvironment(t, true)
+	product := environment.createProduct(t, "PROD-E2E-001", "Teclado Mecânico", 10)
+	invoice := environment.createInvoice(t, fmt.Sprintf(`{"items":[{"productId":%d,"quantity":2}]}`, product.ID))
+	environment.simulateLostCloseResponse(t, invoice.ID, product.ID, "key-1")
+
+	start := make(chan struct{})
+	responses := make([]*http.Response, concurrentCloseAttempts)
+	failures := make([]error, concurrentCloseAttempts)
+	var attempts sync.WaitGroup
+	attempts.Add(concurrentCloseAttempts)
+	for attempt := 0; attempt < concurrentCloseAttempts; attempt++ {
+		go func(attempt int) {
+			defer attempts.Done()
+			<-start
+			responses[attempt], failures[attempt] = environment.sendClose(invoice.ID, "key-1")
+		}(attempt)
+	}
+	close(start)
+	attempts.Wait()
+
+	closedAt := make([]time.Time, 0, concurrentCloseAttempts)
+	for attempt, response := range responses {
+		if failures[attempt] != nil {
+			t.Fatalf("recovery %d failed: %v", attempt, failures[attempt])
+		}
+		assertStatus(t, response, http.StatusOK)
+		var recovered dto.InvoiceResponse
+		decodeResponse(t, response, &recovered)
+		if recovered.Status != "CLOSED" || recovered.ClosedAt == nil {
+			t.Fatalf("recovery %d response = %+v", attempt, recovered)
+		}
+		closedAt = append(closedAt, *recovered.ClosedAt)
+	}
+	if !closedAt[0].Equal(closedAt[1]) {
+		t.Fatalf("closedAt = %v and %v, want a single closure timestamp", closedAt[0], closedAt[1])
+	}
+
+	if balance := environment.getProduct(t, product.ID).Balance; balance != 8 {
+		t.Fatalf("balance = %d, want 8 without a second consumption", balance)
+	}
+	assertCloseOperation(t, environment.billingDB, invoice.ID, "key-1", "COMPLETED")
+	if count := closeOperationCount(t, environment.billingDB); count != 1 {
+		t.Fatalf("close operations = %d, want 1", count)
+	}
+	if count := stockOperationCount(t, environment.inventoryDB); count != 1 {
+		t.Fatalf("stock operations = %d, want 1", count)
+	}
+}
+
+func TestInventoryOfflineCloseKeepsProcessingOperationForALaterRetry(t *testing.T) {
+	environment := newE2EEnvironment(t, false)
+	ctx := context.Background()
+	var invoiceID int64
+	if err := environment.billingDB.QueryRow(ctx, "INSERT INTO invoices DEFAULT VALUES RETURNING id").Scan(&invoiceID); err != nil {
+		t.Fatalf("seed invoice: %v", err)
+	}
+	if _, err := environment.billingDB.Exec(ctx, `
+		INSERT INTO invoice_items (invoice_id, product_id, product_code, product_description, quantity)
+		VALUES ($1, 1, 'OFFLINE-SNAPSHOT', 'Snapshot persistido', 2)`, invoiceID); err != nil {
+		t.Fatalf("seed invoice item: %v", err)
+	}
+	environment.seedProcessingOperation(t, invoiceID, "key-1")
+
+	response := environment.closeInvoice(t, invoiceID, "key-1")
+	assertErrorResponse(t, response, http.StatusServiceUnavailable, "INVENTORY_SERVICE_UNAVAILABLE")
+
+	status, closedAt := invoiceState(t, environment.billingDB, invoiceID)
+	if status != "OPEN" || closedAt != nil {
+		t.Fatalf("invoice status=%s closedAt=%v, want OPEN", status, closedAt)
+	}
+	assertCloseOperation(t, environment.billingDB, invoiceID, "key-1", "PROCESSING")
+}
+
+// simulateLostCloseResponse reproduz a falha após a baixa: a operação fica PROCESSING no Billing e o
+// Inventory já consumiu os itens sob a mesma chave, como se a resposta não tivesse chegado.
+func (environment *e2eEnvironment) simulateLostCloseResponse(t *testing.T, invoiceID, productID int64, idempotencyKey string) {
+	t.Helper()
+	environment.seedProcessingOperation(t, invoiceID, idempotencyKey)
+
+	endpoint := environment.inventoryURL + "/api/stock/consume"
+	payload := fmt.Sprintf(`{"invoiceId":%d,"items":[{"productId":%d,"quantity":2}]}`, invoiceID, productID)
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint, bytes.NewBufferString(payload))
+	if err != nil {
+		t.Fatalf("create stock consumption request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(idempotencyKeyHeader, idempotencyKey)
+	response, err := environment.client.Do(request)
+	if err != nil {
+		t.Fatalf("consume stock directly: %v", err)
+	}
+	assertStatus(t, response, http.StatusOK)
+	response.Body.Close()
+}
+
+func (environment *e2eEnvironment) seedProcessingOperation(t *testing.T, invoiceID int64, idempotencyKey string) {
+	t.Helper()
+	if _, err := environment.billingDB.Exec(
+		context.Background(),
+		"INSERT INTO invoice_close_operations (invoice_id, idempotency_key, status) VALUES ($1, $2, 'PROCESSING')",
+		invoiceID,
+		idempotencyKey,
+	); err != nil {
+		t.Fatalf("seed processing close operation: %v", err)
+	}
 }

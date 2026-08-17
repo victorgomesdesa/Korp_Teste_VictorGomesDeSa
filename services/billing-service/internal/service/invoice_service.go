@@ -84,46 +84,109 @@ func (s *InvoiceService) Close(ctx context.Context, input CloseInvoiceInput) (do
 		return domain.Invoice{}, err
 	}
 
-	operation, err := s.acquireCloseOperation(ctx, invoice, input.IdempotencyKey)
-	if err != nil {
-		return domain.Invoice{}, err
-	}
-	if operation.Status == domain.InvoiceCloseOperationStatusCompleted {
+	if invoice.Status == domain.InvoiceStatusClosed {
+		if _, err := s.closedInvoiceOperation(ctx, invoice, input.IdempotencyKey); err != nil {
+			return domain.Invoice{}, err
+		}
 		return invoice, nil
 	}
 
-	if err := s.consumeInvoiceStock(ctx, invoice, input.IdempotencyKey); err != nil {
+	operation, err := s.repository.FindCloseOperation(ctx, invoice.ID)
+	if err == nil {
+		return s.resumeClose(ctx, invoice, operation, input.IdempotencyKey)
+	}
+	if !errors.Is(err, domain.ErrInvoiceCloseOperationNotFound) {
 		return domain.Invoice{}, err
 	}
+
+	return s.acquireClose(ctx, invoice, input.IdempotencyKey)
+}
+
+func (s *InvoiceService) acquireClose(
+	ctx context.Context,
+	invoice domain.Invoice,
+	idempotencyKey string,
+) (domain.Invoice, error) {
+	_, err := s.repository.CreateCloseOperation(ctx, domain.InvoiceCloseOperation{
+		InvoiceID:      invoice.ID,
+		IdempotencyKey: idempotencyKey,
+		Status:         domain.InvoiceCloseOperationStatusProcessing,
+	})
+	// A UNIQUE(invoice_id) decide qual requisição assume o fechamento; a perdedora reclassifica a
+	// operação vencedora em vez de tratar o conflito como erro.
+	if errors.Is(err, domain.ErrInvoiceCloseOperationConflict) {
+		operation, findErr := s.repository.FindCloseOperation(ctx, invoice.ID)
+		if findErr != nil {
+			return domain.Invoice{}, findErr
+		}
+		return s.resumeClose(ctx, invoice, operation, idempotencyKey)
+	}
+	if err != nil {
+		return domain.Invoice{}, err
+	}
+
+	return s.processClose(ctx, invoice, idempotencyKey, false)
+}
+
+// resumeClose classifica a operação já associada à nota: a mesma chave retoma a operação lógica,
+// uma chave concorrente é recusada e um fechamento concluído por outra tentativa é replicado.
+func (s *InvoiceService) resumeClose(
+	ctx context.Context,
+	invoice domain.Invoice,
+	operation domain.InvoiceCloseOperation,
+	idempotencyKey string,
+) (domain.Invoice, error) {
+	if operation.IdempotencyKey != idempotencyKey {
+		return domain.Invoice{}, domain.ErrInvoiceCloseAlreadyInProgress
+	}
+	if operation.Status == domain.InvoiceCloseOperationStatusCompleted {
+		return s.replayCompletedClose(ctx, invoice.ID, idempotencyKey)
+	}
+
+	return s.processClose(ctx, invoice, idempotencyKey, true)
+}
+
+// processClose atende tanto o fechamento inicial quanto a recuperação de uma operação PROCESSING:
+// o consumo é idempotente pela chave, então reenviar a mesma operação lógica é seguro.
+func (s *InvoiceService) processClose(
+	ctx context.Context,
+	invoice domain.Invoice,
+	idempotencyKey string,
+	recovery bool,
+) (domain.Invoice, error) {
+	if err := s.consumeInvoiceStock(ctx, invoice, idempotencyKey, recovery); err != nil {
+		return domain.Invoice{}, err
+	}
+
 	if err := s.repository.CompleteClose(ctx, invoice.ID); err != nil {
+		if errors.Is(err, domain.ErrInvoiceAlreadyClosed) {
+			return s.replayCompletedClose(ctx, invoice.ID, idempotencyKey)
+		}
 		return domain.Invoice{}, err
 	}
 
 	return s.repository.FindByID(ctx, invoice.ID)
 }
 
-func (s *InvoiceService) acquireCloseOperation(
+// replayCompletedClose relê a nota quando outra tentativa concluiu a mesma operação lógica, para
+// devolver o fechamento persistido sem gerar novo closed_at.
+func (s *InvoiceService) replayCompletedClose(
 	ctx context.Context,
-	invoice domain.Invoice,
+	invoiceID int64,
 	idempotencyKey string,
-) (domain.InvoiceCloseOperation, error) {
-	if invoice.Status == domain.InvoiceStatusClosed {
-		return s.closedInvoiceOperation(ctx, invoice, idempotencyKey)
-	}
-
-	operation, err := s.repository.CreateCloseOperation(ctx, domain.InvoiceCloseOperation{
-		InvoiceID:      invoice.ID,
-		IdempotencyKey: idempotencyKey,
-		Status:         domain.InvoiceCloseOperationStatusProcessing,
-	})
-	if errors.Is(err, domain.ErrInvoiceCloseOperationConflict) {
-		return s.competingCloseOperation(ctx, invoice, idempotencyKey)
-	}
+) (domain.Invoice, error) {
+	invoice, err := s.repository.FindByID(ctx, invoiceID)
 	if err != nil {
-		return domain.InvoiceCloseOperation{}, err
+		return domain.Invoice{}, err
+	}
+	if invoice.Status != domain.InvoiceStatusClosed {
+		return domain.Invoice{}, domain.ErrInvoiceCloseAlreadyInProgress
+	}
+	if _, err := s.closedInvoiceOperation(ctx, invoice, idempotencyKey); err != nil {
+		return domain.Invoice{}, err
 	}
 
-	return operation, nil
+	return invoice, nil
 }
 
 func (s *InvoiceService) closedInvoiceOperation(
@@ -146,24 +209,12 @@ func (s *InvoiceService) closedInvoiceOperation(
 	return operation, nil
 }
 
-func (s *InvoiceService) competingCloseOperation(
+func (s *InvoiceService) consumeInvoiceStock(
 	ctx context.Context,
 	invoice domain.Invoice,
 	idempotencyKey string,
-) (domain.InvoiceCloseOperation, error) {
-	operation, err := s.repository.FindCloseOperation(ctx, invoice.ID)
-	if err != nil {
-		return domain.InvoiceCloseOperation{}, err
-	}
-	if operation.IdempotencyKey == idempotencyKey &&
-		operation.Status == domain.InvoiceCloseOperationStatusCompleted {
-		return operation, nil
-	}
-
-	return domain.InvoiceCloseOperation{}, domain.ErrInvoiceCloseAlreadyInProgress
-}
-
-func (s *InvoiceService) consumeInvoiceStock(ctx context.Context, invoice domain.Invoice, idempotencyKey string) error {
+	recovery bool,
+) error {
 	items := make([]inventory.ConsumeStockItem, 0, len(invoice.Items))
 	for _, item := range invoice.Items {
 		items = append(items, inventory.ConsumeStockItem{ProductID: item.ProductID, Quantity: item.Quantity})
@@ -178,9 +229,7 @@ func (s *InvoiceService) consumeInvoiceStock(ctx context.Context, invoice domain
 	}
 
 	closeError := mapConsumeStockError(err)
-	// Falha definitiva confirmada pelo Inventory: nenhum item foi consumido e a operação é liberada
-	// para uma nova tentativa. Timeout, 5xx ou resposta ilegível preservam PROCESSING.
-	if isDefinitiveCloseFailure(closeError) {
+	if releasesCloseOperation(closeError, recovery) {
 		if err := s.repository.DeleteCloseOperation(ctx, invoice.ID); err != nil {
 			return fmt.Errorf("release invoice close operation: %w", err)
 		}
@@ -202,10 +251,16 @@ func mapConsumeStockError(err error) error {
 	}
 }
 
-func isDefinitiveCloseFailure(err error) bool {
-	return errors.Is(err, domain.ErrInsufficientStock) ||
-		errors.Is(err, domain.ErrProductNotFound) ||
-		errors.Is(err, domain.ErrIdempotencyKeyReused)
+// releasesCloseOperation indica falha definitiva do Inventory, sem nenhum item consumido, na qual a
+// operação pode ser liberada para uma nova tentativa. Timeout, 5xx ou resposta ilegível preservam
+// PROCESSING. Durante a recuperação, IDEMPOTENCY_KEY_REUSED também preserva: a chave já respondeu por
+// outra representação da operação e a divergência precisa ser investigada.
+func releasesCloseOperation(err error, recovery bool) bool {
+	if errors.Is(err, domain.ErrIdempotencyKeyReused) {
+		return !recovery
+	}
+
+	return errors.Is(err, domain.ErrInsufficientStock) || errors.Is(err, domain.ErrProductNotFound)
 }
 
 func validateCreateInvoice(input CreateInvoiceInput) error {
