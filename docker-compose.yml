@@ -1,0 +1,22 @@
+services:
+  inventory-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${INVENTORY_DB_NAME:-inventory_db}
+      POSTGRES_USER: ${INVENTORY_DB_USER:-inventory}
+      POSTGRES_PASSWORD: ${INVENTORY_DB_PASSWORD:-inventory_local}
+    volumes:
+      - inventory-db-data:/var/lib/postgresql/data
+
+  billing-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${BILLING_DB_NAME:-billing_db}
+      POSTGRES_USER: ${BILLING_DB_USER:-billing}
+      POSTGRES_PASSWORD: ${BILLING_DB_PASSWORD:-billing_local}
+    volumes:
+      - billing-db-data:/var/lib/postgresql/data
+
+volumes:
+  inventory-db-data:
+  billing-db-data:
