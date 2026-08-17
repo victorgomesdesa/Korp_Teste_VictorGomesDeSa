@@ -6,6 +6,7 @@ var (
 	ErrProductCodeAlreadyExists = errors.New("product code already exists")
 	ErrProductNotFound          = errors.New("product not found")
 	ErrInsufficientStock        = errors.New("insufficient stock")
+	ErrIdempotencyKeyReused     = errors.New("idempotency key reused")
 	ErrValidation               = errors.New("validation error")
 )
 

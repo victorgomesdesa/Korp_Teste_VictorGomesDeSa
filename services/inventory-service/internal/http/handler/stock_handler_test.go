@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -18,17 +20,26 @@ import (
 const consumeStockPayload = `{"invoiceId":1001,"items":[{"productId":1,"quantity":2}]}`
 
 type stockUseCaseStub struct {
-	consumeErr error
+	consumeOperation domain.StockOperation
+	consumeErr       error
+	consumeInput     service.ConsumeStockInput
 }
 
-func (stub stockUseCaseStub) Consume(context.Context, service.ConsumeStockInput) error {
-	return stub.consumeErr
+func (stub *stockUseCaseStub) Consume(_ context.Context, input service.ConsumeStockInput) (domain.StockOperation, error) {
+	stub.consumeInput = input
+	return stub.consumeOperation, stub.consumeErr
 }
 
 func TestStockHandlerConsumeReturnsConsumedStatus(t *testing.T) {
-	router := stockHandlerTestRouter(stockUseCaseStub{})
+	useCase := &stockUseCaseStub{consumeOperation: domain.StockOperation{
+		ID:             7,
+		InvoiceID:      1001,
+		IdempotencyKey: "key-1",
+		Result:         domain.StockConsumption{InvoiceID: 1001, Status: domain.StockConsumptionStatusConsumed},
+	}}
+	router := stockHandlerTestRouter(useCase)
 
-	response := performProductRequest(router, http.MethodPost, "/api/stock/consume", consumeStockPayload)
+	response := performConsumeStockRequest(router, "key-1", consumeStockPayload)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body: %s", response.Code, http.StatusOK, response.Body.String())
 	}
@@ -37,52 +48,103 @@ func TestStockHandlerConsumeReturnsConsumedStatus(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &consumption); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if consumption.InvoiceID != 1001 || consumption.Status != "CONSUMED" {
+	if consumption.InvoiceID != 1001 || consumption.Status != domain.StockConsumptionStatusConsumed {
 		t.Fatalf("response = %+v, want invoice 1001 consumed", consumption)
+	}
+	if useCase.consumeInput.IdempotencyKey != "key-1" {
+		t.Fatalf("forwarded idempotency key = %q, want key-1", useCase.consumeInput.IdempotencyKey)
 	}
 }
 
-func TestStockHandlerConsumeRejectsMalformedJSON(t *testing.T) {
-	router := stockHandlerTestRouter(stockUseCaseStub{})
+func TestStockHandlerConsumeReplaysPersistedResult(t *testing.T) {
+	useCase := &stockUseCaseStub{consumeOperation: domain.StockOperation{
+		ID:        7,
+		InvoiceID: 1001,
+		Result:    domain.StockConsumption{InvoiceID: 1001, Status: domain.StockConsumptionStatusConsumed},
+	}}
+	router := stockHandlerTestRouter(useCase)
 
-	response := performProductRequest(router, http.MethodPost, "/api/stock/consume", `{"invoiceId":`)
+	first := performConsumeStockRequest(router, "key-1", consumeStockPayload)
+	retry := performConsumeStockRequest(router, "key-1", consumeStockPayload)
+	if first.Code != retry.Code {
+		t.Fatalf("retry status = %d, want %d", retry.Code, first.Code)
+	}
+	if first.Body.String() != retry.Body.String() {
+		t.Fatalf("retry body = %s, want %s", retry.Body.String(), first.Body.String())
+	}
+}
+
+func TestStockHandlerConsumeRequiresIdempotencyKey(t *testing.T) {
+	tests := []struct {
+		name           string
+		idempotencyKey string
+	}{
+		{name: "missing header", idempotencyKey: ""},
+		{name: "whitespace header", idempotencyKey: "   "},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			useCase := &stockUseCaseStub{}
+			router := stockHandlerTestRouter(useCase)
+
+			response := performConsumeStockRequest(router, test.idempotencyKey, consumeStockPayload)
+			assertErrorResponse(t, response, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED")
+			if useCase.consumeInput.IdempotencyKey != "" {
+				t.Fatal("service must not be called without an idempotency key")
+			}
+		})
+	}
+}
+
+func TestStockHandlerConsumeMapsIdempotencyKeyReuse(t *testing.T) {
+	router := stockHandlerTestRouter(&stockUseCaseStub{consumeErr: domain.ErrIdempotencyKeyReused})
+
+	response := performConsumeStockRequest(router, "key-1", consumeStockPayload)
+	assertErrorResponse(t, response, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED")
+}
+
+func TestStockHandlerConsumeRejectsMalformedJSON(t *testing.T) {
+	router := stockHandlerTestRouter(&stockUseCaseStub{})
+
+	response := performConsumeStockRequest(router, "key-1", `{"invoiceId":`)
 	assertErrorResponse(t, response, http.StatusBadRequest, "INVALID_REQUEST")
 }
 
 func TestStockHandlerConsumeRejectsEmptyItems(t *testing.T) {
-	router := stockHandlerTestRouter(stockUseCaseStub{consumeErr: &domain.ValidationError{Field: "items"}})
+	router := stockHandlerTestRouter(&stockUseCaseStub{consumeErr: &domain.ValidationError{Field: "items"}})
 
-	response := performProductRequest(router, http.MethodPost, "/api/stock/consume", `{"invoiceId":1001,"items":[]}`)
+	response := performConsumeStockRequest(router, "key-1", `{"invoiceId":1001,"items":[]}`)
 	assertErrorResponse(t, response, http.StatusUnprocessableEntity, "INVALID_ITEMS")
 }
 
 func TestStockHandlerConsumeRejectsInvalidQuantity(t *testing.T) {
-	router := stockHandlerTestRouter(stockUseCaseStub{consumeErr: &domain.ValidationError{Field: "quantity"}})
+	router := stockHandlerTestRouter(&stockUseCaseStub{consumeErr: &domain.ValidationError{Field: "quantity"}})
 
-	response := performProductRequest(router, http.MethodPost, "/api/stock/consume", `{"invoiceId":1001,"items":[{"productId":1,"quantity":0}]}`)
+	response := performConsumeStockRequest(router, "key-1", `{"invoiceId":1001,"items":[{"productId":1,"quantity":0}]}`)
 	assertErrorResponse(t, response, http.StatusUnprocessableEntity, "INVALID_QUANTITY")
 }
 
 func TestStockHandlerConsumeRejectsInvalidInvoiceID(t *testing.T) {
-	router := stockHandlerTestRouter(stockUseCaseStub{consumeErr: &domain.ValidationError{Field: "invoiceId"}})
+	router := stockHandlerTestRouter(&stockUseCaseStub{consumeErr: &domain.ValidationError{Field: "invoiceId"}})
 
-	response := performProductRequest(router, http.MethodPost, "/api/stock/consume", `{"invoiceId":0,"items":[{"productId":1,"quantity":1}]}`)
+	response := performConsumeStockRequest(router, "key-1", `{"invoiceId":0,"items":[{"productId":1,"quantity":1}]}`)
 	assertErrorResponse(t, response, http.StatusUnprocessableEntity, "INVALID_INVOICE_ID")
 }
 
 func TestStockHandlerConsumeMapsProductNotFound(t *testing.T) {
-	router := stockHandlerTestRouter(stockUseCaseStub{consumeErr: domain.ErrProductNotFound})
+	router := stockHandlerTestRouter(&stockUseCaseStub{consumeErr: domain.ErrProductNotFound})
 
-	response := performProductRequest(router, http.MethodPost, "/api/stock/consume", consumeStockPayload)
+	response := performConsumeStockRequest(router, "key-1", consumeStockPayload)
 	assertErrorResponse(t, response, http.StatusNotFound, "PRODUCT_NOT_FOUND")
 }
 
 func TestStockHandlerConsumeMapsInsufficientStock(t *testing.T) {
-	router := stockHandlerTestRouter(stockUseCaseStub{
+	router := stockHandlerTestRouter(&stockUseCaseStub{
 		consumeErr: &domain.InsufficientStockError{ProductID: 1, ProductCode: "PROD-001"},
 	})
 
-	response := performProductRequest(router, http.MethodPost, "/api/stock/consume", consumeStockPayload)
+	response := performConsumeStockRequest(router, "key-1", consumeStockPayload)
 	assertErrorResponse(t, response, http.StatusConflict, "INSUFFICIENT_STOCK")
 
 	var errorResponse dto.ErrorResponse
@@ -104,4 +166,15 @@ func stockHandlerTestRouter(useCase StockUseCase) *gin.Engine {
 	router := gin.New()
 	router.POST("/api/stock/consume", stockHandler.Consume)
 	return router
+}
+
+func performConsumeStockRequest(router http.Handler, idempotencyKey, body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, "/api/stock/consume", bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	if idempotencyKey != "" {
+		request.Header.Set(idempotencyKeyHeader, idempotencyKey)
+	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	return response
 }

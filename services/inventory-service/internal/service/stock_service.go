@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/inventory-service/internal/domain"
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/inventory-service/internal/repository"
@@ -16,8 +19,9 @@ type ConsumeStockItemInput struct {
 }
 
 type ConsumeStockInput struct {
-	InvoiceID int64
-	Items     []ConsumeStockItemInput
+	IdempotencyKey string
+	InvoiceID      int64
+	Items          []ConsumeStockItemInput
 }
 
 type StockService struct {
@@ -28,21 +32,32 @@ func NewStockService(repository repository.StockRepository) *StockService {
 	return &StockService{repository: repository}
 }
 
-func (s *StockService) Consume(ctx context.Context, input ConsumeStockInput) error {
+func (s *StockService) Consume(ctx context.Context, input ConsumeStockInput) (domain.StockOperation, error) {
 	items, err := aggregateStockItems(input)
 	if err != nil {
-		return err
+		return domain.StockOperation{}, err
 	}
 
-	err = s.repository.Consume(ctx, items)
+	operation, err := s.repository.Consume(ctx, domain.StockOperation{
+		InvoiceID:      input.InvoiceID,
+		IdempotencyKey: input.IdempotencyKey,
+		Fingerprint:    stockFingerprint(input.InvoiceID, items),
+		Result: domain.StockConsumption{
+			InvoiceID: input.InvoiceID,
+			Status:    domain.StockConsumptionStatusConsumed,
+		},
+	}, items)
 	if errors.Is(err, repository.ErrProductNotFound) {
-		return domain.ErrProductNotFound
+		return domain.StockOperation{}, domain.ErrProductNotFound
+	}
+	if errors.Is(err, repository.ErrIdempotencyKeyConflict) {
+		return domain.StockOperation{}, domain.ErrIdempotencyKeyReused
 	}
 	if err != nil {
-		return fmt.Errorf("consume stock: %w", err)
+		return domain.StockOperation{}, fmt.Errorf("consume stock: %w", err)
 	}
 
-	return nil
+	return operation, nil
 }
 
 func aggregateStockItems(input ConsumeStockInput) ([]domain.StockItem, error) {
@@ -73,4 +88,14 @@ func aggregateStockItems(input ConsumeStockInput) ([]domain.StockItem, error) {
 	})
 
 	return items, nil
+}
+
+func stockFingerprint(invoiceID int64, items []domain.StockItem) string {
+	canonical := strconv.FormatInt(invoiceID, 10)
+	for _, item := range items {
+		canonical += "|" + strconv.FormatInt(item.ProductID, 10) + ":" + strconv.FormatInt(item.Quantity, 10)
+	}
+
+	fingerprint := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(fingerprint[:])
 }
