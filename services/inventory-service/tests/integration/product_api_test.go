@@ -238,8 +238,10 @@ func newProductTestAPI(t *testing.T) *productTestAPI {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	productRepository := postgresrepository.NewProductRepository(pool)
 	productService := service.NewProductService(productRepository)
+	stockRepository := postgresrepository.NewStockRepository(pool)
+	stockService := service.NewStockService(stockRepository)
 	return &productTestAPI{
-		router: httpapi.NewRouter(logger, pool, productService),
+		router: httpapi.NewRouter(logger, pool, productService, stockService),
 		pool:   pool,
 	}
 }

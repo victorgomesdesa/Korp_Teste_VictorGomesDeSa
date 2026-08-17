@@ -54,10 +54,12 @@ func run() error {
 
 	productRepository := postgresrepository.NewProductRepository(pool)
 	productService := service.NewProductService(productRepository)
+	stockRepository := postgresrepository.NewStockRepository(pool)
+	stockService := service.NewStockService(stockRepository)
 
 	server := &http.Server{
 		Addr:              ":" + cfg.ServicePort,
-		Handler:           httpapi.NewRouter(appLogger, pool, productService),
+		Handler:           httpapi.NewRouter(appLogger, pool, productService, stockService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
