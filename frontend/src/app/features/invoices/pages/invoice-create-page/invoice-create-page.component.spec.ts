@@ -151,6 +151,23 @@ describe('InvoiceCreatePageComponent', () => {
     expect(router.url).toBe('/invoices/15');
   });
 
+  it('creates the invoice without touching the stock endpoints', async () => {
+    const fixture = await renderWithProducts();
+    fillValidInvoice(fixture);
+
+    submitForm(fixture);
+    await settle(fixture);
+
+    // A criação apenas registra a nota: o consumo de estoque acontece no fechamento.
+    const request = httpTesting.expectOne(invoicesUrl);
+    expect(JSON.stringify(request.request.body)).not.toContain('balance');
+    request.flush({ id: 15, number: 1001, status: 'OPEN', createdAt: '2026-08-17T12:00:00Z', closedAt: null, items: [] });
+    await settle(fixture);
+
+    httpTesting.expectNone(`${apiConfig.inventoryApiUrl}/api/stock/consume`);
+    httpTesting.expectNone(`${invoicesUrl}/15/close`);
+  });
+
   it('reports backend failures without clearing the form', async () => {
     const tests = [
       { code: 'PRODUCT_NOT_FOUND', status: 404, message: 'Um dos produtos selecionados não está mais disponível.' },

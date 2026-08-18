@@ -35,6 +35,28 @@ describe('AppComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('Produtos');
   });
 
+  it('resolves every application route to its page', async () => {
+    const routes = [
+      { path: '/products', heading: 'Produtos' },
+      { path: '/products/new', heading: 'Novo produto' },
+      { path: '/invoices', heading: 'Notas fiscais' },
+      { path: '/invoices/new', heading: 'Nova nota fiscal' }
+    ];
+
+    const fixture = TestBed.createComponent(AppComponent);
+    const router = TestBed.inject(Router);
+
+    for (const route of routes) {
+      await router.navigateByUrl(route.path);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      expect(router.url).toBe(route.path);
+      expect(fixture.nativeElement.textContent).toContain(route.heading);
+    }
+  });
+
   it('loads the invoice detail page', async () => {
     const fixture = TestBed.createComponent(AppComponent);
     const router = TestBed.inject(Router);

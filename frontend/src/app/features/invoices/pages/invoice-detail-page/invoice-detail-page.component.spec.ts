@@ -110,6 +110,7 @@ describe('InvoiceDetailPageComponent', () => {
     await settle(fixture);
     expect(printButton(fixture).disabled).toBe(true);
     expect(printButton(fixture).textContent).toContain('Processando...');
+    expect(printButton(fixture).getAttribute('aria-busy')).toBe('true');
 
     const close = httpTesting.expectOne(`${invoicesUrl}/15/close`);
     close.flush(invoiceFixture({ status: 'CLOSED', closedAt: '2026-08-17T15:30:00Z' }));
