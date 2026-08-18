@@ -81,6 +81,7 @@ func writeProductError(c *gin.Context, err error) {
 	case errors.Is(err, domain.ErrProductNotFound):
 		writeError(c, http.StatusNotFound, "PRODUCT_NOT_FOUND", "Produto não encontrado.")
 	default:
+		_ = c.Error(err)
 		writeError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Erro interno do servidor.")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -177,4 +178,18 @@ func performConsumeStockRequest(router http.Handler, idempotencyKey, body string
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	return response
+}
+
+func TestStockHandlerConsumeControlsUnexpectedError(t *testing.T) {
+	router := stockHandlerTestRouter(&stockUseCaseStub{
+		consumeErr: errors.New(`pgx: relation "products" does not exist on host inventory-db`),
+	})
+
+	response := performConsumeStockRequest(router, "key-1", consumeStockPayload)
+	assertErrorResponse(t, response, http.StatusInternalServerError, "INTERNAL_ERROR")
+	for _, forbidden := range []string{"pgx", "products", "inventory-db", "goroutine"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Fatalf("response leaked %q: %s", forbidden, response.Body.String())
+		}
+	}
 }

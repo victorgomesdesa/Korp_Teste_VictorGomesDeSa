@@ -371,3 +371,35 @@ func TestConsumeStockMapsNetworkFailureToUnavailable(t *testing.T) {
 		t.Fatalf("ConsumeStock() error = %v, want service unavailable", err)
 	}
 }
+
+func TestConsumeStockAbandonsSlowInventory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_, _ = response.Write([]byte(validConsumptionJSON))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestClient(t, server.URL, 20*time.Millisecond)
+
+	startedAt := time.Now()
+	_, err := client.ConsumeStock(context.Background(), "key-1", consumeStockFixture())
+	if !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("ConsumeStock() error = %v, want service unavailable", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed >= 300*time.Millisecond {
+		t.Fatalf("ConsumeStock() waited %v, want the configured timeout to cut the call short", elapsed)
+	}
+}
+
+func TestConsumeStockHonorsCanceledContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("Inventory must not be called with a canceled context")
+	}))
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := newTestClient(t, server.URL, time.Second).ConsumeStock(ctx, "key-1", consumeStockFixture())
+	if !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("ConsumeStock() error = %v, want service unavailable", err)
+	}
+}

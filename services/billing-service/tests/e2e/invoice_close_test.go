@@ -18,6 +18,7 @@ import (
 
 const (
 	idempotencyKeyHeader    = "Idempotency-Key"
+	requestIDHeader         = "X-Request-Id"
 	concurrentCloseAttempts = 2
 )
 
@@ -274,6 +275,14 @@ func (environment *e2eEnvironment) closeInvoice(t *testing.T, invoiceID int64, i
 }
 
 func (environment *e2eEnvironment) sendClose(invoiceID int64, idempotencyKey string) (*http.Response, error) {
+	return environment.sendCloseWithRequestID(invoiceID, idempotencyKey, "")
+}
+
+func (environment *e2eEnvironment) sendCloseWithRequestID(
+	invoiceID int64,
+	idempotencyKey string,
+	requestID string,
+) (*http.Response, error) {
 	endpoint := fmt.Sprintf("%s/api/invoices/%d/close", environment.billingURL, invoiceID)
 	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint, nil)
 	if err != nil {
@@ -281,6 +290,9 @@ func (environment *e2eEnvironment) sendClose(invoiceID int64, idempotencyKey str
 	}
 	if idempotencyKey != "" {
 		request.Header.Set(idempotencyKeyHeader, idempotencyKey)
+	}
+	if requestID != "" {
+		request.Header.Set(requestIDHeader, requestID)
 	}
 	return environment.client.Do(request)
 }
@@ -696,6 +708,59 @@ func TestOnlineCloseRejectsKeyAlreadyUsedByAnotherInvoice(t *testing.T) {
 	}
 	if count := closeOperationCount(t, environment.billingDB); count != 1 {
 		t.Fatalf("close operations = %d, want only the first invoice operation", count)
+	}
+	if count := stockOperationCount(t, environment.inventoryDB); count != 1 {
+		t.Fatalf("stock operations = %d, want 1", count)
+	}
+}
+
+func TestOnlineCloseCorrelatesRequestIDWithoutAffectingOperationIdentity(t *testing.T) {
+	environment := newE2EEnvironment(t, true)
+	product := environment.createProduct(t, "PROD-E2E-001", "Teclado Mecânico", 10)
+	invoice := environment.createInvoice(t, fmt.Sprintf(`{"items":[{"productId":%d,"quantity":2}]}`, product.ID))
+
+	first, err := environment.sendCloseWithRequestID(invoice.ID, "key-1", "request-from-client")
+	if err != nil {
+		t.Fatalf("close invoice: %v", err)
+	}
+	assertStatus(t, first, http.StatusOK)
+	if got := first.Header.Get(requestIDHeader); got != "request-from-client" {
+		t.Fatalf("response X-Request-Id = %q, want the value sent by the client", got)
+	}
+	var closed dto.InvoiceResponse
+	decodeResponse(t, first, &closed)
+
+	// Outro X-Request-Id com a mesma Idempotency-Key continua sendo a mesma operação lógica.
+	retry, err := environment.sendCloseWithRequestID(invoice.ID, "key-1", "another-request")
+	if err != nil {
+		t.Fatalf("retry close invoice: %v", err)
+	}
+	assertStatus(t, retry, http.StatusOK)
+	if got := retry.Header.Get(requestIDHeader); got != "another-request" {
+		t.Fatalf("retry X-Request-Id = %q, want the retry value", got)
+	}
+	var replayed dto.InvoiceResponse
+	decodeResponse(t, retry, &replayed)
+	if !replayed.ClosedAt.Equal(*closed.ClosedAt) {
+		t.Fatalf("replayed closedAt = %v, want %v", replayed.ClosedAt, closed.ClosedAt)
+	}
+
+	// Sem header, o Billing gera a correlação.
+	generated, err := environment.sendCloseWithRequestID(invoice.ID, "key-1", "")
+	if err != nil {
+		t.Fatalf("close without request ID: %v", err)
+	}
+	assertStatus(t, generated, http.StatusOK)
+	if got := generated.Header.Get(requestIDHeader); got == "" {
+		t.Fatal("response X-Request-Id is empty when the client does not send one")
+	}
+	generated.Body.Close()
+
+	if balance := environment.getProduct(t, product.ID).Balance; balance != 8 {
+		t.Fatalf("product balance = %d, want 8 consumed once", balance)
+	}
+	if count := closeOperationCount(t, environment.billingDB); count != 1 {
+		t.Fatalf("close operations = %d, want 1", count)
 	}
 	if count := stockOperationCount(t, environment.inventoryDB); count != 1 {
 		t.Fatalf("stock operations = %d, want 1", count)

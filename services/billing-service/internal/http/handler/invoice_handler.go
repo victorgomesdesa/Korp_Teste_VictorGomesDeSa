@@ -57,6 +57,7 @@ func (h *InvoiceHandler) Create(c *gin.Context) {
 func (h *InvoiceHandler) List(c *gin.Context) {
 	invoices, err := h.service.List(c.Request.Context())
 	if err != nil {
+		_ = c.Error(err)
 		writeInvoiceError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Erro interno do servidor.")
 		return
 	}
@@ -77,6 +78,7 @@ func (h *InvoiceHandler) FindByID(c *gin.Context) {
 			writeInvoiceError(c, http.StatusNotFound, "INVOICE_NOT_FOUND", "Nota fiscal não encontrada.")
 			return
 		}
+		_ = c.Error(err)
 		writeInvoiceError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Erro interno do servidor.")
 		return
 	}
@@ -126,6 +128,7 @@ func handleCloseInvoiceError(c *gin.Context, err error) {
 	case errors.Is(err, domain.ErrInventoryServiceUnavailable):
 		writeInvoiceError(c, http.StatusServiceUnavailable, "INVENTORY_SERVICE_UNAVAILABLE", "Serviço de estoque indisponível.")
 	default:
+		_ = c.Error(err)
 		writeInvoiceError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Erro interno do servidor.")
 	}
 }
@@ -140,6 +143,7 @@ func handleCreateInvoiceError(c *gin.Context, err error) {
 	case errors.Is(err, domain.ErrInventoryServiceUnavailable):
 		writeInvoiceError(c, http.StatusServiceUnavailable, "INVENTORY_SERVICE_UNAVAILABLE", "Serviço de estoque indisponível.")
 	default:
+		_ = c.Error(err)
 		writeInvoiceError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Erro interno do servidor.")
 	}
 }

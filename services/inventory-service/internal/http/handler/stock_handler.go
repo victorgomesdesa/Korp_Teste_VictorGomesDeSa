@@ -64,6 +64,9 @@ func (h *StockHandler) Consume(c *gin.Context) {
 	if err != nil {
 		status, code, message := stockErrorResponse(err)
 		h.logConsumeFailure(c, request.InvoiceID, startedAt, err, code)
+		if status == http.StatusInternalServerError {
+			_ = c.Error(err)
+		}
 		writeError(c, status, code, message)
 		return
 	}
