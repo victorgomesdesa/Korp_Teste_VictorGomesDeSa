@@ -1,0 +1,179 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test -- --watch=false
+
+      - name: Build
+        run: npm run build
+
+  inventory:
+    name: Inventory Service
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/inventory-service
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: services/inventory-service/go.mod
+          cache-dependency-path: services/inventory-service/go.sum
+
+      - name: Run vet
+        run: go vet ./...
+
+      - name: Run unit tests
+        run: go test ./...
+
+  billing:
+    name: Billing Service
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/billing-service
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: services/billing-service/go.mod
+          cache-dependency-path: services/billing-service/go.sum
+
+      - name: Run vet
+        run: go vet ./...
+
+      - name: Run unit tests
+        run: go test ./...
+
+  backend-integration:
+    name: Backend Integration and E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - inventory
+      - billing
+    env:
+      INVENTORY_DB_USER: inventory
+      INVENTORY_DB_PASSWORD: inventory_ci
+      INVENTORY_TEST_DB_NAME: inventory_test_db
+      BILLING_DB_USER: billing
+      BILLING_DB_PASSWORD: billing_ci
+      BILLING_TEST_DB_NAME: billing_test_db
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run Inventory integration tests
+        run: make test-inventory-integration
+
+      - name: Run Billing integration tests
+        run: make test-billing-integration
+
+      - name: Run backend E2E tests
+        run: make test-billing-e2e
+
+      - name: Show Docker logs on failure
+        if: failure()
+        run: docker compose --profile test logs
+
+      - name: Stop Docker services
+        if: always()
+        run: docker compose --profile test down -v --remove-orphans
+
+  frontend-e2e:
+    name: Frontend E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - frontend
+      - backend-integration
+    env:
+      INVENTORY_DB_NAME: inventory_db
+      INVENTORY_DB_USER: inventory
+      INVENTORY_DB_PASSWORD: inventory_ci
+      BILLING_DB_NAME: billing_db
+      BILLING_DB_USER: billing
+      BILLING_DB_PASSWORD: billing_ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run frontend E2E tests
+        run: make test-frontend-e2e
+
+      - name: Show Docker logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-failure-artifacts
+          path: frontend/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Stop Docker services
+        if: always()
+        run: docker compose down -v --remove-orphans
