@@ -241,7 +241,7 @@ func newProductTestAPI(t *testing.T) *productTestAPI {
 	stockRepository := postgresrepository.NewStockRepository(pool)
 	stockService := service.NewStockService(stockRepository)
 	return &productTestAPI{
-		router: httpapi.NewRouter(logger, pool, productService, stockService),
+		router: httpapi.NewRouter(logger, "http://localhost:4200", pool, productService, stockService),
 		pool:   pool,
 	}
 }

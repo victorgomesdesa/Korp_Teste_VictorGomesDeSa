@@ -8,7 +8,13 @@ import (
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/inventory-service/internal/http/middleware"
 )
 
-func NewRouter(logger *slog.Logger, database handler.DatabasePinger, productService handler.ProductUseCase, stockService handler.StockUseCase) *gin.Engine {
+func NewRouter(
+	logger *slog.Logger,
+	allowedOrigin string,
+	database handler.DatabasePinger,
+	productService handler.ProductUseCase,
+	stockService handler.StockUseCase,
+) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	healthHandler := handler.NewHealthHandler(database)
 	productHandler := handler.NewProductHandler(productService)
@@ -19,6 +25,7 @@ func NewRouter(logger *slog.Logger, database handler.DatabasePinger, productServ
 		middleware.RequestID(),
 		middleware.Logging(logger),
 		middleware.Recovery(logger),
+		middleware.CORS(allowedOrigin),
 	)
 	router.GET("/health", healthHandler.Check)
 

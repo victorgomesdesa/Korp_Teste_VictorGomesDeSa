@@ -11,6 +11,7 @@ func TestLoadUsesSafeDevelopmentDefaults(t *testing.T) {
 	t.Setenv("INVENTORY_DB_PORT", "")
 	t.Setenv("INVENTORY_DB_NAME", "")
 	t.Setenv("INVENTORY_DB_USER", "")
+	t.Setenv("INVENTORY_ALLOWED_ORIGIN", "")
 	t.Setenv("INVENTORY_DB_PASSWORD", "secret")
 
 	cfg, err := Load()
@@ -20,6 +21,9 @@ func TestLoadUsesSafeDevelopmentDefaults(t *testing.T) {
 
 	if cfg.ServicePort != defaultServicePort {
 		t.Errorf("ServicePort = %q, want %q", cfg.ServicePort, defaultServicePort)
+	}
+	if cfg.AllowedOrigin != defaultAllowedOrigin {
+		t.Errorf("AllowedOrigin = %q, want %q", cfg.AllowedOrigin, defaultAllowedOrigin)
 	}
 	if cfg.Database.Host != defaultDBHost {
 		t.Errorf("Database.Host = %q, want %q", cfg.Database.Host, defaultDBHost)

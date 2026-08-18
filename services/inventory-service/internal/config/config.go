@@ -13,11 +13,15 @@ const (
 	defaultDBPort      = "5432"
 	defaultDBName      = "inventory_db"
 	defaultDBUser      = "inventory"
+
+	// Origem do frontend Angular em desenvolvimento; o navegador exige CORS explícito.
+	defaultAllowedOrigin = "http://localhost:4200"
 )
 
 type Config struct {
-	ServicePort string
-	Database    DatabaseConfig
+	ServicePort   string
+	AllowedOrigin string
+	Database      DatabaseConfig
 }
 
 type DatabaseConfig struct {
@@ -30,7 +34,8 @@ type DatabaseConfig struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		ServicePort: valueOrDefault("INVENTORY_SERVICE_PORT", defaultServicePort),
+		ServicePort:   valueOrDefault("INVENTORY_SERVICE_PORT", defaultServicePort),
+		AllowedOrigin: valueOrDefault("INVENTORY_ALLOWED_ORIGIN", defaultAllowedOrigin),
 		Database: DatabaseConfig{
 			Host:     valueOrDefault("INVENTORY_DB_HOST", defaultDBHost),
 			Port:     valueOrDefault("INVENTORY_DB_PORT", defaultDBPort),

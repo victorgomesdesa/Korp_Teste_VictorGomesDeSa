@@ -19,6 +19,7 @@ services:
       dockerfile: Dockerfile
     environment:
       INVENTORY_SERVICE_PORT: ${INVENTORY_SERVICE_PORT:-8080}
+      INVENTORY_ALLOWED_ORIGIN: ${INVENTORY_ALLOWED_ORIGIN:-http://localhost:4200}
       INVENTORY_DB_HOST: inventory-db
       INVENTORY_DB_PORT: 5432
       INVENTORY_DB_NAME: ${INVENTORY_DB_NAME:-inventory_db}
