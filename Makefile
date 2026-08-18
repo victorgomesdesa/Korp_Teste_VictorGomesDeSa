@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate-inventory-up migrate-inventory-down migrate-billing-up migrate-billing-down test-inventory test-inventory-integration test-billing test-billing-integration test-billing-e2e
+.PHONY: up down logs migrate-inventory-up migrate-inventory-down migrate-billing-up migrate-billing-down test-inventory test-inventory-integration test-billing test-billing-integration test-billing-e2e test-frontend-e2e
 
 up:
 	docker compose up -d
@@ -83,3 +83,25 @@ test-billing-e2e:
 	docker compose --profile test stop inventory-test-service; \
 	docker compose --profile test run --rm --no-deps billing-test-runner \
 		go test -race -count=1 -tags=e2e ./tests/e2e -run '^TestInventoryOffline'
+
+test-frontend-e2e:
+	@set -eu; \
+	cleanup() { \
+		invoices=$$(docker compose exec -T billing-db psql -U $${BILLING_DB_USER:-billing} -d $${BILLING_DB_NAME:-billing_db} -t -A \
+			-c "SELECT DISTINCT invoice_id FROM invoice_items WHERE product_code LIKE 'E2E-%'" | paste -sd, -); \
+		if [ -n "$$invoices" ]; then \
+			docker compose exec -T inventory-db psql -U $${INVENTORY_DB_USER:-inventory} -d $${INVENTORY_DB_NAME:-inventory_db} \
+				-c "DELETE FROM stock_operations WHERE invoice_id IN ($$invoices)" >/dev/null; \
+			docker compose exec -T billing-db psql -U $${BILLING_DB_USER:-billing} -d $${BILLING_DB_NAME:-billing_db} \
+				-c "DELETE FROM invoice_close_operations WHERE invoice_id IN ($$invoices)" \
+				-c "DELETE FROM invoice_items WHERE invoice_id IN ($$invoices)" \
+				-c "DELETE FROM invoices WHERE id IN ($$invoices)" >/dev/null; \
+		fi; \
+		docker compose exec -T inventory-db psql -U $${INVENTORY_DB_USER:-inventory} -d $${INVENTORY_DB_NAME:-inventory_db} \
+			-c "DELETE FROM products WHERE code LIKE 'E2E-%'" >/dev/null; \
+	}; \
+	trap cleanup EXIT INT TERM; \
+	docker compose up -d --build --wait inventory-service billing-service; \
+	$(MAKE) migrate-inventory-up; \
+	$(MAKE) migrate-billing-up; \
+	npm --prefix frontend run e2e
