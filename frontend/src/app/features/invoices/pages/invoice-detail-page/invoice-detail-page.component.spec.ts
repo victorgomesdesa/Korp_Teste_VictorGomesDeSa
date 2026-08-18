@@ -124,6 +124,7 @@ describe('InvoiceDetailPageComponent', () => {
   });
 
   it('ignores a second click while the close request is pending', async () => {
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
     const fixture = render('15');
     httpTesting.expectOne(`${invoicesUrl}/15`).flush(invoiceFixture());
     await settle(fixture);
@@ -135,6 +136,9 @@ describe('InvoiceDetailPageComponent', () => {
 
     httpTesting.expectOne(`${invoicesUrl}/15/close`).flush(invoiceFixture({ status: 'CLOSED' }));
     await settle(fixture);
+
+    expect(print).toHaveBeenCalledTimes(1);
+    print.mockRestore();
   });
 
   it('keeps the same idempotency key when the Inventory is unavailable', async () => {
