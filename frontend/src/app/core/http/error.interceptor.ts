@@ -14,6 +14,11 @@ export function getApiError(error: unknown): ApiError | null {
   return error.error;
 }
 
+// O navegador não alcançou o serviço: não há envelope de erro para traduzir.
+export function isConnectionError(error: unknown): boolean {
+  return error instanceof HttpErrorResponse && error.status === 0;
+}
+
 function isApiError(value: unknown): value is ApiError {
   if (typeof value !== 'object' || value === null) {
     return false;

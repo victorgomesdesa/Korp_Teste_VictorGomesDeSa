@@ -115,6 +115,19 @@ describe('ProductsPageComponent', () => {
     const link = fixture.nativeElement.querySelector('a[href="/products/new"]') as HTMLElement;
     expect(link.textContent).toContain('Novo produto');
   });
+
+  it('shows a connection message and keeps the error out of the snackbar', async () => {
+    const fixture = TestBed.createComponent(ProductsPageComponent);
+    fixture.detectChanges();
+
+    httpTesting.expectOne(productsUrl).error(new ProgressEvent('error'), { status: 0 });
+    await settle(fixture);
+
+    // Falha de carregamento é estado de página, não snackbar.
+    expect(fixture.nativeElement.textContent).toContain('Não foi possível conectar ao serviço. Tente novamente.');
+    expect(document.querySelector('mat-snack-bar-container')).toBeNull();
+    expect(fixture.nativeElement.textContent).not.toContain('Nenhum');
+  });
 });
 
 function productFixture(product: Partial<Product> = {}): Product {

@@ -4,6 +4,7 @@ import { MatTableModule } from '@angular/material/table';
 import { RouterLink } from '@angular/router';
 import { finalize } from 'rxjs';
 
+import { loadErrorMessage } from '../../../../core/http/load-error-message';
 import { EmptyStateComponent } from '../../../../shared/components/empty-state/empty-state.component';
 import { ErrorMessageComponent } from '../../../../shared/components/error-message/error-message.component';
 import { LoadingComponent } from '../../../../shared/components/loading/loading.component';
@@ -120,8 +121,7 @@ export class ProductsPageComponent {
       .pipe(finalize(() => this.loading.set(false)))
       .subscribe({
         next: (products) => this.products.set(products),
-        error: () =>
-          this.errorMessage.set('Não foi possível carregar os produtos. Tente novamente.')
+        error: (error: unknown) => this.errorMessage.set(loadErrorMessage(error, 'os produtos'))
       });
   }
 }

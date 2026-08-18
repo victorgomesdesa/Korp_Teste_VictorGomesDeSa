@@ -178,11 +178,12 @@ describe('InvoiceDetailPageComponent', () => {
     const first = httpTesting.expectOne(`${invoicesUrl}/15/close`);
     const firstKey = first.request.headers.get('Idempotency-Key');
     first.flush(
-      { code: 'INSUFFICIENT_STOCK', message: 'Estoque insuficiente.' },
+      { code: 'INSUFFICIENT_STOCK', message: 'Estoque insuficiente para fechar a nota fiscal.' },
       { status: 409, statusText: 'Conflict' }
     );
     await settle(fixture);
 
+    // A mensagem segura do backend é reaproveitada em vez de um texto genérico.
     expect(document.body.textContent).toContain('Estoque insuficiente para fechar a nota fiscal.');
     expect(fixture.componentInstance.invoice()?.status).toBe('OPEN');
     expect(print).not.toHaveBeenCalled();
@@ -217,7 +218,7 @@ describe('InvoiceDetailPageComponent', () => {
     await settle(fixture);
 
     expect(fixture.nativeElement.textContent).toContain('Fechada');
-    expect(document.body.textContent).toContain('Esta nota já foi fechada por outra operação.');
+    expect(document.body.textContent).toContain('Esta nota já foi fechada.');
     expect(print).not.toHaveBeenCalled();
     print.mockRestore();
   });
@@ -253,6 +254,50 @@ describe('InvoiceDetailPageComponent', () => {
     await settle(fixture);
 
     expect(fixture.nativeElement.textContent).not.toContain('Imprimir Nota');
+  });
+
+  it('reports a reused idempotency key without exposing internals', async () => {
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
+    const fixture = render('15');
+    httpTesting.expectOne(`${invoicesUrl}/15`).flush(invoiceFixture());
+    await settle(fixture);
+
+    printButton(fixture).click();
+    await settle(fixture);
+    httpTesting.expectOne(`${invoicesUrl}/15/close`).flush(
+      { code: 'IDEMPOTENCY_KEY_REUSED', message: 'Idempotency-Key já utilizada em outra operação.' },
+      { status: 409, statusText: 'Conflict' }
+    );
+    await settle(fixture);
+
+    httpTesting.expectOne(`${invoicesUrl}/15`).flush(invoiceFixture());
+    await settle(fixture);
+
+    const feedback = document.body.textContent ?? '';
+    expect(feedback).toContain('Não foi possível reutilizar esta operação.');
+    expect(feedback).not.toContain('fingerprint');
+    expect(feedback).not.toContain('Idempotency-Key');
+    expect(print).not.toHaveBeenCalled();
+    print.mockRestore();
+  });
+
+  it('shows a connection message when the Billing cannot be reached during the close', async () => {
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
+    const fixture = render('15');
+    httpTesting.expectOne(`${invoicesUrl}/15`).flush(invoiceFixture());
+    await settle(fixture);
+
+    printButton(fixture).click();
+    await settle(fixture);
+    httpTesting
+      .expectOne(`${invoicesUrl}/15/close`)
+      .error(new ProgressEvent('error'), { status: 0 });
+    await settle(fixture);
+
+    expect(document.body.textContent).toContain('Não foi possível conectar ao serviço. Tente novamente.');
+    expect(fixture.componentInstance.invoice()?.status).toBe('OPEN');
+    expect(print).not.toHaveBeenCalled();
+    print.mockRestore();
   });
 
   function printButton(fixture: ComponentFixture<InvoiceDetailPageComponent>): HTMLButtonElement {

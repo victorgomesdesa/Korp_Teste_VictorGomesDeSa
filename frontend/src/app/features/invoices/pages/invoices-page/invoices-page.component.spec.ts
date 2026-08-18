@@ -103,6 +103,19 @@ describe('InvoicesPageComponent', () => {
     const detail = fixture.nativeElement.querySelector('a[href="/invoices/7"]') as HTMLElement;
     expect(detail.textContent).toContain('Visualizar');
   });
+
+  it('shows a connection message and keeps the error out of the snackbar', async () => {
+    const fixture = TestBed.createComponent(InvoicesPageComponent);
+    fixture.detectChanges();
+
+    httpTesting.expectOne(invoicesUrl).error(new ProgressEvent('error'), { status: 0 });
+    await settle(fixture);
+
+    // Falha de carregamento é estado de página, não snackbar.
+    expect(fixture.nativeElement.textContent).toContain('Não foi possível conectar ao serviço. Tente novamente.');
+    expect(document.querySelector('mat-snack-bar-container')).toBeNull();
+    expect(fixture.nativeElement.textContent).not.toContain('Nenhum');
+  });
 });
 
 function invoiceFixture(invoice: Partial<InvoiceSummary> = {}): InvoiceSummary {

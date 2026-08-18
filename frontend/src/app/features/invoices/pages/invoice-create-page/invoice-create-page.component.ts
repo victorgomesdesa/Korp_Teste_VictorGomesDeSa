@@ -17,11 +17,12 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { Router, RouterLink } from '@angular/router';
 import { finalize } from 'rxjs';
 
-import { getApiError } from '../../../../core/http/error.interceptor';
+import { getApiError, isConnectionError } from '../../../../core/http/error.interceptor';
 import { ErrorMessageComponent } from '../../../../shared/components/error-message/error-message.component';
 import { LoadingComponent } from '../../../../shared/components/loading/loading.component';
 import { Product } from '../../../products/models/product';
 import { ProductService } from '../../../products/services/product.service';
+import { loadErrorMessage } from '../../../../core/http/load-error-message';
 import { InvoiceService } from '../../services/invoice.service';
 
 @Component({
@@ -185,10 +186,8 @@ export class InvoiceCreatePageComponent {
       .pipe(finalize(() => this.loadingProducts.set(false)))
       .subscribe({
         next: (products) => this.products.set(products),
-        error: () =>
-          this.productsErrorMessage.set(
-            'Não foi possível carregar os produtos. Tente novamente.'
-          )
+        error: (error: unknown) =>
+          this.productsErrorMessage.set(loadErrorMessage(error, 'os produtos'))
       });
   }
 
@@ -249,9 +248,11 @@ function integerValidator(control: AbstractControl<number>): ValidationErrors | 
 }
 
 function createErrorMessage(error: unknown): string {
-  const apiError = getApiError(error);
+  if (isConnectionError(error)) {
+    return 'Não foi possível conectar ao serviço. Tente novamente.';
+  }
 
-  switch (apiError?.code) {
+  switch (getApiError(error)?.code) {
     case 'PRODUCT_NOT_FOUND':
       return 'Um dos produtos selecionados não está mais disponível.';
     case 'INVENTORY_SERVICE_UNAVAILABLE':

@@ -6,7 +6,8 @@ import { MatTableModule } from '@angular/material/table';
 import { RouterLink } from '@angular/router';
 import { finalize } from 'rxjs';
 
-import { getApiError } from '../../../../core/http/error.interceptor';
+import { getApiError, isConnectionError } from '../../../../core/http/error.interceptor';
+import { loadErrorMessage } from '../../../../core/http/load-error-message';
 import { EmptyStateComponent } from '../../../../shared/components/empty-state/empty-state.component';
 import { ErrorMessageComponent } from '../../../../shared/components/error-message/error-message.component';
 import { LoadingComponent } from '../../../../shared/components/loading/loading.component';
@@ -190,7 +191,7 @@ export class InvoiceDetailPageComponent implements OnInit {
             this.notFound.set(true);
             return;
           }
-          this.errorMessage.set('Não foi possível carregar a nota fiscal. Tente novamente.');
+          this.errorMessage.set(loadErrorMessage(error, 'a nota fiscal'));
         }
       });
   }
@@ -239,7 +240,7 @@ export class InvoiceDetailPageComponent implements OnInit {
         break;
     }
 
-    this.snackBar.open(closeErrorMessage(code), 'Fechar', { duration: 8000 });
+    this.snackBar.open(closeErrorMessage(error), 'Fechar', { duration: 8000 });
   }
 
   // A impressão só começa depois que o DOM reflete a nota fechada.
@@ -248,18 +249,24 @@ export class InvoiceDetailPageComponent implements OnInit {
   }
 }
 
-function closeErrorMessage(code: string | undefined): string {
-  switch (code) {
+function closeErrorMessage(error: unknown): string {
+  if (isConnectionError(error)) {
+    return 'Não foi possível conectar ao serviço. Tente novamente.';
+  }
+
+  const apiError = getApiError(error);
+  switch (apiError?.code) {
     case 'INSUFFICIENT_STOCK':
-      return 'Estoque insuficiente para fechar a nota fiscal.';
+      // O Billing já devolve uma mensagem segura em português para este caso.
+      return apiError.message;
     case 'PRODUCT_NOT_FOUND':
       return 'Um dos produtos da nota não está mais disponível.';
     case 'INVOICE_ALREADY_CLOSED':
-      return 'Esta nota já foi fechada por outra operação.';
+      return 'Esta nota já foi fechada.';
     case 'INVOICE_CLOSE_ALREADY_IN_PROGRESS':
       return 'Esta nota já está sendo processada.';
     case 'IDEMPOTENCY_KEY_REUSED':
-      return 'Não foi possível concluir a operação por inconsistência da tentativa anterior.';
+      return 'Não foi possível reutilizar esta operação. Verifique a nota atualizada e tente novamente.';
     default:
       return 'Não foi possível concluir a operação. Tente novamente.';
   }

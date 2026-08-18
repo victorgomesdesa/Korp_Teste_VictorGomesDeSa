@@ -13,7 +13,7 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { Router, RouterLink } from '@angular/router';
 import { finalize } from 'rxjs';
 
-import { getApiError } from '../../../../core/http/error.interceptor';
+import { getApiError, isConnectionError } from '../../../../core/http/error.interceptor';
 import { ProductService } from '../../services/product.service';
 
 @Component({
@@ -117,24 +117,26 @@ export class ProductCreatePageComponent {
   }
 
   private handleCreateError(error: unknown): void {
-    const apiError = getApiError(error);
-
-    if (apiError?.code === 'PRODUCT_CODE_ALREADY_EXISTS') {
+    // Código duplicado é sinalizado no próprio campo; os demais erros vão para o snackbar.
+    if (getApiError(error)?.code === 'PRODUCT_CODE_ALREADY_EXISTS') {
       this.form.controls.code.setErrors({ codeAlreadyExists: true });
-      this.snackBar.open('Já existe um produto com esse código.', 'Fechar', { duration: 5000 });
       return;
     }
 
-    if (apiError?.code === 'VALIDATION_ERROR') {
-      this.snackBar.open('Dados do produto inválidos. Revise os campos.', 'Fechar', {
-        duration: 5000
-      });
-      return;
-    }
+    this.snackBar.open(createProductErrorMessage(error), 'Fechar', { duration: 8000 });
+  }
+}
 
-    this.snackBar.open('Não foi possível cadastrar o produto. Tente novamente.', 'Fechar', {
-      duration: 5000
-    });
+function createProductErrorMessage(error: unknown): string {
+  if (isConnectionError(error)) {
+    return 'Não foi possível conectar ao serviço. Tente novamente.';
+  }
+
+  switch (getApiError(error)?.code) {
+    case 'VALIDATION_ERROR':
+      return 'Revise os dados informados.';
+    default:
+      return 'Não foi possível cadastrar o produto. Tente novamente.';
   }
 }
 

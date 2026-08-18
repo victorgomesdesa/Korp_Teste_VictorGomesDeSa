@@ -113,6 +113,52 @@ describe('ProductCreatePageComponent', () => {
     expect(fixture.componentInstance.form.controls.code.hasError('codeAlreadyExists')).toBe(true);
     expect(fixture.nativeElement.textContent).toContain('Já existe um produto com esse código.');
     expect(submitButton(fixture).disabled).toBe(false);
+    // O feedback aparece apenas no campo, sem duplicar em snackbar.
+    expect(document.querySelector('mat-snack-bar-container')).toBeNull();
+  });
+
+  it('clears the server-side code error when the user edits the field', async () => {
+    const fixture = TestBed.createComponent(ProductCreatePageComponent);
+    fixture.detectChanges();
+
+    fixture.componentInstance.form.setValue({
+      code: 'PROD-001',
+      description: 'Teclado Mecânico',
+      balance: 10
+    });
+    submitForm(fixture);
+    await settle(fixture);
+
+    httpTesting.expectOne(productsUrl).flush(
+      { code: 'PRODUCT_CODE_ALREADY_EXISTS', message: 'Já existe um produto com esse código.' },
+      { status: 409, statusText: 'Conflict' }
+    );
+    await settle(fixture);
+    expect(fixture.componentInstance.form.controls.code.hasError('codeAlreadyExists')).toBe(true);
+
+    fixture.componentInstance.form.controls.code.setValue('PROD-002');
+    await settle(fixture);
+
+    expect(fixture.componentInstance.form.controls.code.hasError('codeAlreadyExists')).toBe(false);
+    expect(fixture.componentInstance.form.controls.code.valid).toBe(true);
+  });
+
+  it('shows a connection message when the Inventory cannot be reached', async () => {
+    const fixture = TestBed.createComponent(ProductCreatePageComponent);
+    fixture.detectChanges();
+
+    fixture.componentInstance.form.setValue({
+      code: 'PROD-005',
+      description: 'Webcam',
+      balance: 3
+    });
+    submitForm(fixture);
+    await settle(fixture);
+
+    httpTesting.expectOne(productsUrl).error(new ProgressEvent('error'), { status: 0 });
+    await settle(fixture);
+
+    expect(document.body.textContent).toContain('Não foi possível conectar ao serviço. Tente novamente.');
   });
 
   it('keeps the user on the page with a controlled message on unexpected failures', async () => {
