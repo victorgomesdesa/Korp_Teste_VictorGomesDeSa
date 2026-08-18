@@ -1,0 +1,58 @@
+:host {
+  display: block;
+  min-height: 100%;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.app-toolbar {
+  position: sticky;
+  z-index: 10;
+  top: 0;
+  display: flex;
+  gap: 2rem;
+  min-height: 4rem;
+  padding-inline: clamp(1rem, 4vw, 3rem);
+  color: var(--mat-sys-on-primary-container);
+  background: var(--mat-sys-primary-container);
+  border-bottom: 1px solid var(--mat-sys-outline-variant);
+}
+
+.app-title {
+  color: inherit;
+  font: var(--mat-sys-title-medium);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+nav {
+  display: flex;
+  gap: 0.25rem;
+  margin-left: auto;
+}
+
+.active-link {
+  background: color-mix(in srgb, var(--mat-sys-primary) 12%, transparent);
+}
+
+.app-content {
+  width: min(100% - 2rem, 75rem);
+  margin-inline: auto;
+  padding-block: clamp(2rem, 5vw, 4rem);
+  outline: none;
+}
+
+@media (max-width: 43rem) {
+  .app-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding-block: 0.75rem;
+  }
+
+  nav {
+    margin-left: 0;
+  }
+}
