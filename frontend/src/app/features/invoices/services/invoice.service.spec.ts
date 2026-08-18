@@ -67,4 +67,14 @@ describe('InvoiceService', () => {
 
     request.flush({});
   });
+
+  it('closes an invoice sending the idempotency key and no body', () => {
+    invoiceService.closeInvoice(15, 'key-1').subscribe();
+
+    const request = httpTesting.expectOne(`${invoicesUrl}/15/close`);
+    expect(request.request.method).toBe('POST');
+    expect(request.request.headers.get('Idempotency-Key')).toBe('key-1');
+    expect(request.request.body).toBeNull();
+    request.flush({});
+  });
 });

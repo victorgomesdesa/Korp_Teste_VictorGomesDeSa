@@ -100,6 +100,165 @@ describe('InvoiceDetailPageComponent', () => {
     expect(text).not.toContain(apiConfig.billingApiUrl);
   });
 
+  it('closes the invoice, prints once and drops the idempotency key', async () => {
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
+    const fixture = render('15');
+    httpTesting.expectOne(`${invoicesUrl}/15`).flush(invoiceFixture());
+    await settle(fixture);
+
+    printButton(fixture).click();
+    await settle(fixture);
+    expect(printButton(fixture).disabled).toBe(true);
+    expect(printButton(fixture).textContent).toContain('Processando...');
+
+    const close = httpTesting.expectOne(`${invoicesUrl}/15/close`);
+    close.flush(invoiceFixture({ status: 'CLOSED', closedAt: '2026-08-17T15:30:00Z' }));
+    await settle(fixture);
+
+    expect(fixture.nativeElement.textContent).toContain('Fechada');
+    expect(fixture.nativeElement.querySelector('button')).toBeNull();
+    expect(document.body.textContent).toContain('Nota fiscal fechada com sucesso.');
+    expect(print).toHaveBeenCalledTimes(1);
+    print.mockRestore();
+  });
+
+  it('ignores a second click while the close request is pending', async () => {
+    const fixture = render('15');
+    httpTesting.expectOne(`${invoicesUrl}/15`).flush(invoiceFixture());
+    await settle(fixture);
+
+    printButton(fixture).click();
+    printButton(fixture).click();
+    fixture.componentInstance.closeInvoice();
+    await settle(fixture);
+
+    httpTesting.expectOne(`${invoicesUrl}/15/close`).flush(invoiceFixture({ status: 'CLOSED' }));
+    await settle(fixture);
+  });
+
+  it('keeps the same idempotency key when the Inventory is unavailable', async () => {
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
+    const fixture = render('15');
+    httpTesting.expectOne(`${invoicesUrl}/15`).flush(invoiceFixture());
+    await settle(fixture);
+
+    printButton(fixture).click();
+    await settle(fixture);
+    const first = httpTesting.expectOne(`${invoicesUrl}/15/close`);
+    const firstKey = first.request.headers.get('Idempotency-Key');
+    first.flush(
+      { code: 'INVENTORY_SERVICE_UNAVAILABLE', message: 'Serviço de estoque indisponível.' },
+      { status: 503, statusText: 'Service Unavailable' }
+    );
+    await settle(fixture);
+
+    expect(document.body.textContent).toContain('Não foi possível concluir a operação. Tente novamente.');
+    expect(fixture.componentInstance.invoice()?.status).toBe('OPEN');
+    expect(print).not.toHaveBeenCalled();
+    expect(printButton(fixture).disabled).toBe(false);
+
+    printButton(fixture).click();
+    await settle(fixture);
+    const retry = httpTesting.expectOne(`${invoicesUrl}/15/close`);
+    expect(retry.request.headers.get('Idempotency-Key')).toBe(firstKey);
+
+    retry.flush(invoiceFixture({ status: 'CLOSED' }));
+    await settle(fixture);
+    print.mockRestore();
+  });
+
+  it('starts a new logical operation after insufficient stock', async () => {
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
+    const fixture = render('15');
+    httpTesting.expectOne(`${invoicesUrl}/15`).flush(invoiceFixture());
+    await settle(fixture);
+
+    printButton(fixture).click();
+    await settle(fixture);
+    const first = httpTesting.expectOne(`${invoicesUrl}/15/close`);
+    const firstKey = first.request.headers.get('Idempotency-Key');
+    first.flush(
+      { code: 'INSUFFICIENT_STOCK', message: 'Estoque insuficiente.' },
+      { status: 409, statusText: 'Conflict' }
+    );
+    await settle(fixture);
+
+    expect(document.body.textContent).toContain('Estoque insuficiente para fechar a nota fiscal.');
+    expect(fixture.componentInstance.invoice()?.status).toBe('OPEN');
+    expect(print).not.toHaveBeenCalled();
+
+    printButton(fixture).click();
+    await settle(fixture);
+    const retry = httpTesting.expectOne(`${invoicesUrl}/15/close`);
+    expect(retry.request.headers.get('Idempotency-Key')).not.toBe(firstKey);
+
+    retry.flush(invoiceFixture({ status: 'CLOSED' }));
+    await settle(fixture);
+    print.mockRestore();
+  });
+
+  it('reloads the invoice when it was already closed by another operation', async () => {
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
+    const fixture = render('15');
+    httpTesting.expectOne(`${invoicesUrl}/15`).flush(invoiceFixture());
+    await settle(fixture);
+
+    printButton(fixture).click();
+    await settle(fixture);
+    httpTesting.expectOne(`${invoicesUrl}/15/close`).flush(
+      { code: 'INVOICE_ALREADY_CLOSED', message: 'Nota fiscal já fechada.' },
+      { status: 409, statusText: 'Conflict' }
+    );
+    await settle(fixture);
+
+    httpTesting
+      .expectOne(`${invoicesUrl}/15`)
+      .flush(invoiceFixture({ status: 'CLOSED', closedAt: '2026-08-17T15:30:00Z' }));
+    await settle(fixture);
+
+    expect(fixture.nativeElement.textContent).toContain('Fechada');
+    expect(document.body.textContent).toContain('Esta nota já foi fechada por outra operação.');
+    expect(print).not.toHaveBeenCalled();
+    print.mockRestore();
+  });
+
+  it('reports a close already in progress and reloads without printing', async () => {
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined);
+    const fixture = render('15');
+    httpTesting.expectOne(`${invoicesUrl}/15`).flush(invoiceFixture());
+    await settle(fixture);
+
+    printButton(fixture).click();
+    await settle(fixture);
+    httpTesting.expectOne(`${invoicesUrl}/15/close`).flush(
+      { code: 'INVOICE_CLOSE_ALREADY_IN_PROGRESS', message: 'Fechamento em andamento.' },
+      { status: 409, statusText: 'Conflict' }
+    );
+    await settle(fixture);
+
+    httpTesting.expectOne(`${invoicesUrl}/15`).flush(invoiceFixture());
+    await settle(fixture);
+
+    expect(document.body.textContent).toContain('Esta nota já está sendo processada.');
+    expect(fixture.componentInstance.invoice()?.status).toBe('OPEN');
+    expect(print).not.toHaveBeenCalled();
+    print.mockRestore();
+  });
+
+  it('does not offer the close action for a closed invoice', async () => {
+    const fixture = render('15');
+    httpTesting
+      .expectOne(`${invoicesUrl}/15`)
+      .flush(invoiceFixture({ status: 'CLOSED', closedAt: '2026-08-17T15:30:00Z' }));
+    await settle(fixture);
+
+    expect(fixture.nativeElement.textContent).not.toContain('Imprimir Nota');
+  });
+
+  function printButton(fixture: ComponentFixture<InvoiceDetailPageComponent>): HTMLButtonElement {
+    return fixture.nativeElement.querySelector('button') as HTMLButtonElement;
+  }
+
   function render(id: string): ComponentFixture<InvoiceDetailPageComponent> {
     const fixture = TestBed.createComponent(InvoiceDetailPageComponent);
     fixture.componentRef.setInput('id', id);

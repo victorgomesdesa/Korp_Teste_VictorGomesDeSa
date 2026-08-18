@@ -86,3 +86,25 @@ textarea:focus-visible {
   margin: 1rem 0 0;
   color: var(--mat-sys-on-surface-variant);
 }
+
+@media print {
+  // A impressão mantém apenas a representação da nota: número, status, datas e itens.
+  .app-toolbar,
+  .cdk-overlay-container,
+  .detail-actions,
+  button {
+    display: none !important;
+  }
+
+  .app-content {
+    width: 100%;
+    padding-block: 0;
+  }
+
+  .page {
+    padding: 0;
+    background: none;
+    border: none;
+    box-shadow: none;
+  }
+}

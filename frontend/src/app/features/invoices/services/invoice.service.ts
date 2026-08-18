@@ -21,4 +21,12 @@ export class InvoiceService {
   createInvoice(request: CreateInvoiceRequest): Observable<Invoice> {
     return this.httpClient.post<Invoice>(this.invoicesUrl, request);
   }
+
+  // A Idempotency-Key identifica a operação lógica de fechamento e é controlada pela página, que
+  // precisa reenviar a mesma chave quando o resultado da tentativa anterior ficou ambíguo.
+  closeInvoice(id: number, idempotencyKey: string): Observable<Invoice> {
+    return this.httpClient.post<Invoice>(`${this.invoicesUrl}/${id}/close`, null, {
+      headers: { 'Idempotency-Key': idempotencyKey }
+    });
+  }
 }
