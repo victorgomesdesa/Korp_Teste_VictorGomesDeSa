@@ -12,6 +12,7 @@ func TestLoadUsesSafeDevelopmentDefaults(t *testing.T) {
 	t.Setenv("BILLING_DB_PORT", "")
 	t.Setenv("BILLING_DB_NAME", "")
 	t.Setenv("BILLING_DB_USER", "")
+	t.Setenv("BILLING_ALLOWED_ORIGIN", "")
 	t.Setenv("BILLING_DB_PASSWORD", "secret")
 	t.Setenv("INVENTORY_SERVICE_URL", "")
 	t.Setenv("INVENTORY_SERVICE_TIMEOUT", "")
@@ -23,6 +24,9 @@ func TestLoadUsesSafeDevelopmentDefaults(t *testing.T) {
 
 	if cfg.ServicePort != defaultServicePort {
 		t.Errorf("ServicePort = %q, want %q", cfg.ServicePort, defaultServicePort)
+	}
+	if cfg.AllowedOrigin != defaultAllowedOrigin {
+		t.Errorf("AllowedOrigin = %q, want %q", cfg.AllowedOrigin, defaultAllowedOrigin)
 	}
 	if cfg.Database.Host != defaultDBHost || cfg.Database.Port != defaultDBPort {
 		t.Errorf("database address = %s:%s, want %s:%s", cfg.Database.Host, cfg.Database.Port, defaultDBHost, defaultDBPort)

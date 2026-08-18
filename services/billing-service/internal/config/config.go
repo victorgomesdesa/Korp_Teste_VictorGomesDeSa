@@ -17,10 +17,14 @@ const (
 	defaultDBUser              = "billing"
 	defaultInventoryServiceURL = "http://localhost:8080"
 	defaultInventoryTimeout    = 3 * time.Second
+
+	// Origem do frontend Angular em desenvolvimento; o navegador exige CORS explícito.
+	defaultAllowedOrigin = "http://localhost:4200"
 )
 
 type Config struct {
 	ServicePort         string
+	AllowedOrigin       string
 	Database            DatabaseConfig
 	InventoryServiceURL string
 	InventoryTimeout    time.Duration
@@ -36,7 +40,8 @@ type DatabaseConfig struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		ServicePort: valueOrDefault("BILLING_SERVICE_PORT", defaultServicePort),
+		ServicePort:   valueOrDefault("BILLING_SERVICE_PORT", defaultServicePort),
+		AllowedOrigin: valueOrDefault("BILLING_ALLOWED_ORIGIN", defaultAllowedOrigin),
 		Database: DatabaseConfig{
 			Host:     valueOrDefault("BILLING_DB_HOST", defaultDBHost),
 			Port:     valueOrDefault("BILLING_DB_PORT", defaultDBPort),

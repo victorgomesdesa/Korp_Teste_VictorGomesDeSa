@@ -68,7 +68,7 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              ":" + cfg.ServicePort,
-		Handler:           httpapi.NewRouter(appLogger, pool, invoiceService),
+		Handler:           httpapi.NewRouter(appLogger, cfg.AllowedOrigin, pool, invoiceService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

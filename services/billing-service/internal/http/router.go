@@ -8,7 +8,12 @@ import (
 	"github.com/victorgomesdesa/Korp_Teste_VictorGomesDeSa/services/billing-service/internal/http/middleware"
 )
 
-func NewRouter(logger *slog.Logger, database handler.DatabasePinger, invoiceService handler.InvoiceUseCase) *gin.Engine {
+func NewRouter(
+	logger *slog.Logger,
+	allowedOrigin string,
+	database handler.DatabasePinger,
+	invoiceService handler.InvoiceUseCase,
+) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	healthHandler := handler.NewHealthHandler(database)
 	invoiceHandler := handler.NewInvoiceHandler(invoiceService)
@@ -18,6 +23,7 @@ func NewRouter(logger *slog.Logger, database handler.DatabasePinger, invoiceServ
 		middleware.RequestID(),
 		middleware.Logging(logger),
 		middleware.Recovery(logger),
+		middleware.CORS(allowedOrigin),
 	)
 	router.GET("/health", healthHandler.Check)
 	router.POST("/api/invoices", invoiceHandler.Create)

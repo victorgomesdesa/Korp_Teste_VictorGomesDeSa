@@ -123,6 +123,7 @@ services:
       dockerfile: Dockerfile
     environment:
       BILLING_SERVICE_PORT: ${BILLING_SERVICE_PORT:-8081}
+      BILLING_ALLOWED_ORIGIN: ${BILLING_ALLOWED_ORIGIN:-http://localhost:4200}
       BILLING_DB_HOST: billing-db
       BILLING_DB_PORT: 5432
       BILLING_DB_NAME: ${BILLING_DB_NAME:-billing_db}
