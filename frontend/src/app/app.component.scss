@@ -49,6 +49,8 @@ nav {
     align-items: flex-start;
     flex-direction: column;
     gap: 0.5rem;
+    // A altura fixa do mat-toolbar não acomoda o empilhamento do título e da navegação.
+    height: auto;
     padding-block: 0.75rem;
   }
 
