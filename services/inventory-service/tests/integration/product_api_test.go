@@ -38,7 +38,8 @@ func TestT011CreateValidProduct(t *testing.T) {
 	response := testAPI.request(t, http.MethodPost, "/api/products", `{
 		"code":"PROD-005",
 		"description":"Webcam",
-		"balance":3
+		"balance":3,
+		"priceInCents":14990
 	}`)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201; body: %s", response.Code, response.Body.String())
@@ -46,7 +47,7 @@ func TestT011CreateValidProduct(t *testing.T) {
 
 	var product dto.ProductResponse
 	decodeJSON(t, response, &product)
-	if product.ID == 0 || product.Code != "PROD-005" || product.Description != "Webcam" || product.Balance != 3 {
+	if product.ID == 0 || product.Code != "PROD-005" || product.Description != "Webcam" || product.Balance != 3 || product.PriceInCents != 14990 {
 		t.Fatalf("created product = %+v", product)
 	}
 	if product.CreatedAt.IsZero() || product.UpdatedAt.IsZero() {
@@ -54,16 +55,16 @@ func TestT011CreateValidProduct(t *testing.T) {
 	}
 
 	var code, description string
-	var balance int64
+	var balance, priceInCents int64
 	if err := testAPI.pool.QueryRow(
 		context.Background(),
-		"SELECT code, description, balance FROM products WHERE id = $1",
+		"SELECT code, description, balance, price_in_cents FROM products WHERE id = $1",
 		product.ID,
-	).Scan(&code, &description, &balance); err != nil {
+	).Scan(&code, &description, &balance, &priceInCents); err != nil {
 		t.Fatalf("query persisted product: %v", err)
 	}
-	if code != "PROD-005" || description != "Webcam" || balance != 3 {
-		t.Fatalf("persisted values = %q, %q, %d", code, description, balance)
+	if code != "PROD-005" || description != "Webcam" || balance != 3 || priceInCents != 14990 {
+		t.Fatalf("persisted values = %q, %q, %d, %d", code, description, balance, priceInCents)
 	}
 }
 
@@ -72,9 +73,13 @@ func TestT012RejectsInvalidProductsWithoutPersistence(t *testing.T) {
 		name    string
 		payload string
 	}{
-		{name: "empty code", payload: `{"code":"","description":"Webcam","balance":3}`},
-		{name: "empty description", payload: `{"code":"PROD-005","description":"","balance":3}`},
-		{name: "negative balance", payload: `{"code":"PROD-005","description":"Webcam","balance":-1}`},
+		{name: "empty code", payload: `{"code":"","description":"Webcam","balance":3,"priceInCents":100}`},
+		{name: "empty description", payload: `{"code":"PROD-005","description":"","balance":3,"priceInCents":100}`},
+		{name: "zero balance", payload: `{"code":"PROD-005","description":"Webcam","balance":0,"priceInCents":100}`},
+		{name: "negative balance", payload: `{"code":"PROD-005","description":"Webcam","balance":-1,"priceInCents":100}`},
+		{name: "missing price", payload: `{"code":"PROD-005","description":"Webcam","balance":1}`},
+		{name: "zero price", payload: `{"code":"PROD-005","description":"Webcam","balance":1,"priceInCents":0}`},
+		{name: "negative price", payload: `{"code":"PROD-005","description":"Webcam","balance":1,"priceInCents":-1}`},
 	}
 
 	for _, test := range tests {
@@ -100,7 +105,8 @@ func TestT013DatabaseUniqueConstraintAndConflictResponse(t *testing.T) {
 	first := testAPI.request(t, http.MethodPost, "/api/products", `{
 		"code":"PROD-001",
 		"description":"Teclado Mecânico",
-		"balance":10
+		"balance":10,
+		"priceInCents":100
 	}`)
 	if first.Code != http.StatusCreated {
 		t.Fatalf("first status = %d, want 201; body: %s", first.Code, first.Body.String())
@@ -109,7 +115,8 @@ func TestT013DatabaseUniqueConstraintAndConflictResponse(t *testing.T) {
 	duplicate := testAPI.request(t, http.MethodPost, "/api/products", `{
 		"code":"PROD-001",
 		"description":"Produto alterado",
-		"balance":99
+		"balance":99,
+		"priceInCents":100
 	}`)
 	assertError(t, duplicate, http.StatusConflict, "PRODUCT_CODE_ALREADY_EXISTS")
 

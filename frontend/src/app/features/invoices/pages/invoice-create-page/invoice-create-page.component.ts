@@ -61,9 +61,10 @@ import { InvoiceService } from '../../services/invoice.service';
                     @for (product of products(); track product.id) {
                       <mat-option
                         [value]="product.id"
-                        [disabled]="isProductSelectedElsewhere(product.id, itemIndex)"
+                        [disabled]="isProductSelectedElsewhere(product.id, itemIndex) || product.balance === 0"
                       >
-                        {{ product.code }} — {{ product.description }} (Saldo: {{ product.balance }})
+                        {{ product.code }} — {{ product.description }}
+                        ({{ product.balance === 0 ? 'Sem estoque' : 'Estoque: ' + product.balance }})
                       </mat-option>
                     }
                   </mat-select>
@@ -74,9 +75,25 @@ import { InvoiceService } from '../../services/invoice.service';
 
                 <mat-form-field class="quantity-field">
                   <mat-label>Quantidade</mat-label>
-                  <input matInput type="number" formControlName="quantity" min="1" step="1" />
-                  @if (item.controls.quantity.invalid) {
+                  <input
+                    matInput
+                    type="number"
+                    formControlName="quantity"
+                    min="1"
+                    [max]="productBalance(item.controls.productId.value)"
+                    step="1"
+                  />
+                  @if (
+                    item.controls.quantity.hasError('required') ||
+                    item.controls.quantity.hasError('min') ||
+                    item.controls.quantity.hasError('integer')
+                  ) {
                     <mat-error>Quantidade deve ser maior que zero.</mat-error>
+                  } @else if (stockError(itemIndex); as stockMessage) {
+                    <mat-error>{{ stockMessage }}</mat-error>
+                  }
+                  @if (stockError(itemIndex); as stockMessage) {
+                    <mat-hint class="stock-hint">{{ stockMessage }}</mat-hint>
                   }
                 </mat-form-field>
 
@@ -86,6 +103,7 @@ import { InvoiceService } from '../../services/invoice.service';
                   [attr.aria-label]="'Remover item ' + (itemIndex + 1)"
                   (click)="removeItem(itemIndex)"
                 >
+                  <mat-icon aria-hidden="true">delete_outline</mat-icon>
                   Remover
                 </button>
               </div>
@@ -98,12 +116,19 @@ import { InvoiceService } from '../../services/invoice.service';
           @if (items.length === 0) {
             <app-error-message message="A nota fiscal deve possuir ao menos um item." />
           }
+          @if (errorMessage()) {
+            <app-error-message [message]="errorMessage()!" />
+          }
 
           <div class="form-actions">
-            <button mat-stroked-button type="button" (click)="addItem()">Adicionar produto</button>
+            <button mat-stroked-button type="button" (click)="addItem()">
+              <mat-icon aria-hidden="true">add</mat-icon>
+              Adicionar produto
+            </button>
             <span class="form-actions-spacer"></span>
             <a mat-stroked-button routerLink="/invoices">Cancelar</a>
             <button mat-flat-button type="submit" [disabled]="submitting()">
+              <mat-icon aria-hidden="true">receipt_long</mat-icon>
               {{ submitting() ? 'Criando...' : 'Criar nota' }}
             </button>
           </div>
@@ -129,7 +154,7 @@ import { InvoiceService } from '../../services/invoice.service';
     .invoice-item {
       display: flex;
       align-items: center;
-      gap: 1rem;
+      gap: 1.25rem;
       flex-wrap: wrap;
     }
 
@@ -141,10 +166,14 @@ import { InvoiceService } from '../../services/invoice.service';
       flex: 0 1 9rem;
     }
 
+    .stock-hint {
+      color: var(--mat-sys-error);
+    }
+
     .form-actions {
       display: flex;
       align-items: center;
-      gap: 0.75rem;
+      gap: 1rem;
       flex-wrap: wrap;
     }
 
@@ -164,6 +193,7 @@ export class InvoiceCreatePageComponent {
   readonly loadingProducts = signal(false);
   readonly productsErrorMessage = signal<string | null>(null);
   readonly submitting = signal(false);
+  readonly errorMessage = signal<string | null>(null);
 
   readonly form = this.formBuilder.nonNullable.group({
     items: this.formBuilder.nonNullable.array([this.createItem()], duplicateProductValidator)
@@ -205,14 +235,31 @@ export class InvoiceCreatePageComponent {
     );
   }
 
+  productBalance(productId: number): number | null {
+    return this.products().find((product) => product.id === productId)?.balance ?? null;
+  }
+
+  stockError(index: number): string | null {
+    const value = this.items.controls[index]?.getRawValue();
+    if (value === undefined || value.productId <= 0) return null;
+    const product = this.products().find((candidate) => candidate.id === value.productId);
+    if (product === undefined || value.quantity <= product.balance) return null;
+    return `Disponível em estoque: ${product.balance} unidade${product.balance === 1 ? '' : 's'}.`;
+  }
+
+  hasInsufficientStock(): boolean {
+    return this.items.controls.some((_, index) => this.stockError(index) !== null);
+  }
+
   submit(): void {
-    if (this.form.invalid || this.items.length === 0) {
+    if (this.form.invalid || this.items.length === 0 || this.hasInsufficientStock()) {
       this.form.markAllAsTouched();
       return;
     }
 
     const items = this.items.controls.map((item) => item.getRawValue());
     this.submitting.set(true);
+    this.errorMessage.set(null);
 
     this.invoiceService
       .createInvoice({ items })
@@ -222,9 +269,7 @@ export class InvoiceCreatePageComponent {
           this.snackBar.open('Nota fiscal criada com sucesso.', 'Fechar', { duration: 5000 });
           void this.router.navigate(['/invoices', invoice.id]);
         },
-        error: (error: unknown) => this.snackBar.open(createErrorMessage(error), 'Fechar', {
-          duration: 8000
-        })
+        error: (error: unknown) => this.errorMessage.set(createErrorMessage(error))
       });
   }
 
@@ -257,6 +302,8 @@ function createErrorMessage(error: unknown): string {
       return 'Um dos produtos selecionados não está mais disponível.';
     case 'INVENTORY_SERVICE_UNAVAILABLE':
       return 'Não foi possível validar os produtos porque o serviço de estoque está indisponível. Tente novamente.';
+    case 'INSUFFICIENT_STOCK':
+      return 'O estoque mudou e não é mais suficiente para criar a nota. Revise as quantidades.';
     case 'INVALID_QUANTITY':
     case 'INVALID_PRODUCT_ID':
     case 'INVALID_INVOICE_ITEMS':

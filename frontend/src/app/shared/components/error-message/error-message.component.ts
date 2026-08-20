@@ -1,14 +1,32 @@
 import { Component, input } from '@angular/core';
+import { MatIconModule } from '@angular/material/icon';
 
 @Component({
   selector: 'app-error-message',
-  template: `<p class="error-message" role="alert">{{ message() }}</p>`,
+  imports: [MatIconModule],
+  template: `
+    <div class="error-message" role="alert">
+      <mat-icon aria-hidden="true">error</mat-icon>
+      <span>{{ message() }}</span>
+    </div>
+  `,
   styles: `
     .error-message {
-      padding: 0.875rem 1rem;
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      padding: 1rem 1.125rem;
       color: var(--mat-sys-on-error-container);
       background: var(--mat-sys-error-container);
-      border-radius: 0.5rem;
+      border: 2px solid var(--mat-sys-error);
+      border-radius: 0.75rem;
+      box-shadow: var(--mat-sys-level2);
+      font-weight: 600;
+    }
+
+    mat-icon {
+      flex: 0 0 auto;
+      color: var(--mat-sys-error);
     }
   `
 })

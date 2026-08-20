@@ -22,7 +22,7 @@ func TestInvoiceRepositoryPersistsInvoiceAndItemsWithDatabaseValues(t *testing.T
 
 	firstFixture := invoiceFixture(1, 2)
 	firstFixture.Items = append(firstFixture.Items, domain.InvoiceItem{
-		ProductID: 2, ProductCode: "PROD-002", ProductDescription: "Mouse", Quantity: 1,
+		ProductID: 2, ProductCode: "PROD-002", ProductDescription: "Mouse", UnitPriceInCents: 5990, Quantity: 1,
 	})
 	first, err := repository.Create(context.Background(), firstFixture)
 	if err != nil {
@@ -42,7 +42,7 @@ func TestInvoiceRepositoryPersistsInvoiceAndItemsWithDatabaseValues(t *testing.T
 	if len(first.Items) != 2 || first.Items[0].ID == 0 || first.Items[0].InvoiceID != first.ID || first.Items[1].InvoiceID != first.ID {
 		t.Fatalf("persisted item does not reference invoice: %+v", first.Items)
 	}
-	if first.Items[0].ProductCode != "PROD-001" || first.Items[0].ProductDescription != "Teclado Mecânico" {
+	if first.Items[0].ProductCode != "PROD-001" || first.Items[0].ProductDescription != "Teclado Mecânico" || first.Items[0].UnitPriceInCents != 19990 {
 		t.Fatalf("snapshots = %+v", first.Items[0])
 	}
 
@@ -89,7 +89,7 @@ func TestInvoiceRepositoryListsInvoicesByDescendingNumber(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first invoice: %v", err)
 	}
-	second, err := repository.Create(context.Background(), invoiceFixture(2, 1))
+	second, err := repository.Create(context.Background(), invoiceFixture(2, 2))
 	if err != nil {
 		t.Fatalf("create second invoice: %v", err)
 	}
@@ -107,13 +107,19 @@ func TestInvoiceRepositoryListsInvoicesByDescendingNumber(t *testing.T) {
 	if invoices[0].Items != nil || invoices[1].Items != nil {
 		t.Fatalf("list should not load items: %+v", invoices)
 	}
+	if len(invoices[0].ProductCodes) != 1 || invoices[0].ProductCodes[0] != "PROD-001" {
+		t.Fatalf("product codes were not loaded in summary: %+v", invoices[0].ProductCodes)
+	}
+	if invoices[0].TotalInCents != 39980 || invoices[1].TotalInCents != 19990 {
+		t.Fatalf("invoice totals = [%d %d], want [39980 19990]", invoices[0].TotalInCents, invoices[1].TotalInCents)
+	}
 }
 
 func TestInvoiceRepositoryFindsDetailsAndStoredSnapshots(t *testing.T) {
 	pool := newTestPool(t)
 	repository := postgresrepository.NewInvoiceRepository(pool)
 	fixture := domain.Invoice{Items: []domain.InvoiceItem{
-		{ProductID: 10, ProductCode: "PROD-OLD", ProductDescription: "Descrição histórica", Quantity: 3},
+		{ProductID: 10, ProductCode: "PROD-OLD", ProductDescription: "Descrição histórica", UnitPriceInCents: 12345, Quantity: 3},
 		{ProductID: 11, ProductCode: "PROD-SECOND", ProductDescription: "Segundo item", Quantity: 1},
 	}}
 	created, err := repository.Create(context.Background(), fixture)
@@ -131,7 +137,7 @@ func TestInvoiceRepositoryFindsDetailsAndStoredSnapshots(t *testing.T) {
 	if len(found.Items) != 2 || found.Items[0].ID >= found.Items[1].ID {
 		t.Fatalf("items are not ordered by ascending ID: %+v", found.Items)
 	}
-	if found.Items[0].InvoiceID != found.ID || found.Items[0].ProductCode != "PROD-OLD" || found.Items[0].ProductDescription != "Descrição histórica" {
+	if found.Items[0].InvoiceID != found.ID || found.Items[0].ProductCode != "PROD-OLD" || found.Items[0].ProductDescription != "Descrição histórica" || found.Items[0].UnitPriceInCents != 12345 {
 		t.Fatalf("stored snapshot was not loaded: %+v", found.Items[0])
 	}
 }
@@ -148,7 +154,7 @@ func TestInvoiceRepositoryReturnsDomainNotFound(t *testing.T) {
 
 func invoiceFixture(productID, quantity int64) domain.Invoice {
 	return domain.Invoice{Items: []domain.InvoiceItem{{
-		ProductID: productID, ProductCode: "PROD-001", ProductDescription: "Teclado Mecânico", Quantity: quantity,
+		ProductID: productID, ProductCode: "PROD-001", ProductDescription: "Teclado Mecânico", UnitPriceInCents: 19990, Quantity: quantity,
 	}}}
 }
 

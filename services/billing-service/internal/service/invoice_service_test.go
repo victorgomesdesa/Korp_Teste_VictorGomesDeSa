@@ -149,8 +149,8 @@ func (stub *productClientStub) ConsumeStock(
 func TestInvoiceServiceCreatesInvoiceWithInventorySnapshots(t *testing.T) {
 	repository := &invoiceRepositoryStub{result: domain.Invoice{ID: 10, Number: 1001, Status: domain.InvoiceStatusOpen}}
 	client := &productClientStub{products: map[int64]inventory.Product{
-		1: {ID: 1, Code: "PROD-001", Description: "Teclado Mecânico", Balance: 2},
-		2: {ID: 2, Code: "PROD-002", Description: "Mouse", Balance: 0},
+		1: {ID: 1, Code: "PROD-001", Description: "Teclado Mecânico", Balance: 20},
+		2: {ID: 2, Code: "PROD-002", Description: "Mouse", Balance: 2},
 	}}
 	service := NewInvoiceService(repository, client)
 
@@ -180,6 +180,25 @@ func TestInvoiceServiceCreatesInvoiceWithInventorySnapshots(t *testing.T) {
 	}
 	if repository.created.ClosedAt != nil {
 		t.Fatalf("closedAt = %v, want nil", repository.created.ClosedAt)
+	}
+}
+
+func TestInvoiceServiceRejectsInsufficientStockBeforePersistence(t *testing.T) {
+	repository := &invoiceRepositoryStub{}
+	client := &productClientStub{products: map[int64]inventory.Product{
+		1: {ID: 1, Code: "PROD-001", Description: "Teclado", Balance: 2},
+	}}
+
+	_, err := NewInvoiceService(repository, client).Create(
+		context.Background(),
+		CreateInvoiceInput{Items: []CreateInvoiceItemInput{{ProductID: 1, Quantity: 3}}},
+	)
+
+	if !errors.Is(err, domain.ErrInsufficientStock) {
+		t.Fatalf("Create() error = %v, want ErrInsufficientStock", err)
+	}
+	if repository.calls != 0 {
+		t.Fatalf("repository calls = %d, want zero", repository.calls)
 	}
 }
 
@@ -229,7 +248,7 @@ func TestInvoiceServiceMapsInventoryErrorsWithoutPersisting(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			repository := &invoiceRepositoryStub{}
 			client := &productClientStub{
-				products: map[int64]inventory.Product{},
+				products: map[int64]inventory.Product{1: {ID: 1, Balance: 1}},
 				errors:   map[int64]error{2: test.err},
 			}
 			_, err := NewInvoiceService(repository, client).Create(context.Background(), CreateInvoiceInput{Items: []CreateInvoiceItemInput{

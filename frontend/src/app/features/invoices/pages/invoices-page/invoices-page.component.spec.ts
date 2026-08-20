@@ -51,6 +51,7 @@ describe('InvoicesPageComponent', () => {
     expect(text).toContain('1002');
     expect(text).toContain('Fechada');
     expect(text).toContain('17/08/2026');
+    expect(text).toContain('R$399.80');
     expect(text).not.toContain('OPEN');
     expect(text).not.toContain('CLOSED');
   });
@@ -65,6 +66,20 @@ describe('InvoicesPageComponent', () => {
     const text = fixture.nativeElement.textContent;
     expect(text).toContain('Nenhuma nota fiscal cadastrada.');
     expect(text).toContain('Criar primeira nota');
+  });
+
+  it('shows at most five product codes and summarizes the remaining products', async () => {
+    const fixture = TestBed.createComponent(InvoicesPageComponent);
+    fixture.detectChanges();
+    httpTesting.expectOne(invoicesUrl).flush([
+      invoiceFixture({ productCodes: ['PROD-01', 'PROD-02', 'PROD-03', 'PROD-04', 'PROD-05', 'PROD-06', 'PROD-07'] })
+    ]);
+    await settle(fixture);
+
+    const text = fixture.nativeElement.textContent;
+    expect(text).toContain('PROD-01, PROD-02, PROD-03, PROD-04, PROD-05');
+    expect(text).toContain('+2');
+    expect(text).not.toContain('PROD-06');
   });
 
   it('shows a controlled message when loading fails and retries on demand', async () => {
@@ -125,6 +140,8 @@ function invoiceFixture(invoice: Partial<InvoiceSummary> = {}): InvoiceSummary {
     status: 'OPEN',
     createdAt: '2026-08-17T12:00:00Z',
     closedAt: null,
+    productCodes: [],
+    totalInCents: 39980,
     ...invoice
   };
 }

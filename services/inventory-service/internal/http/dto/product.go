@@ -7,18 +7,20 @@ import (
 )
 
 type CreateProductRequest struct {
-	Code        string `json:"code"`
-	Description string `json:"description"`
-	Balance     *int64 `json:"balance"`
+	Code         string `json:"code"`
+	Description  string `json:"description"`
+	Balance      *int64 `json:"balance"`
+	PriceInCents *int64 `json:"priceInCents"`
 }
 
 type ProductResponse struct {
-	ID          int64     `json:"id"`
-	Code        string    `json:"code"`
-	Description string    `json:"description"`
-	Balance     int64     `json:"balance"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID           int64     `json:"id"`
+	Code         string    `json:"code"`
+	Description  string    `json:"description"`
+	Balance      int64     `json:"balance"`
+	PriceInCents int64     `json:"priceInCents"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 type ErrorResponse struct {
@@ -28,12 +30,13 @@ type ErrorResponse struct {
 
 func ProductFromDomain(product domain.Product) ProductResponse {
 	return ProductResponse{
-		ID:          product.ID,
-		Code:        product.Code,
-		Description: product.Description,
-		Balance:     product.Balance,
-		CreatedAt:   product.CreatedAt,
-		UpdatedAt:   product.UpdatedAt,
+		ID:           product.ID,
+		Code:         product.Code,
+		Description:  product.Description,
+		Balance:      product.Balance,
+		PriceInCents: product.PriceInCents,
+		CreatedAt:    product.CreatedAt,
+		UpdatedAt:    product.UpdatedAt,
 	}
 }
 

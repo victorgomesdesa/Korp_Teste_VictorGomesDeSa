@@ -330,6 +330,7 @@ function invoiceFixture(invoice: Partial<Invoice> = {}): Invoice {
         productId: 1,
         productCode: 'PROD-001',
         productDescription: 'Teclado Mecânico',
+        unitPriceInCents: 19990,
         quantity: 2
       }
     ],

@@ -1,8 +1,9 @@
-import { DatePipe } from '@angular/common';
+import { CurrencyPipe, DatePipe } from '@angular/common';
 import { Component, Injector, OnInit, afterNextRender, inject, input, signal } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { MatTableModule } from '@angular/material/table';
+import { MatIconModule } from '@angular/material/icon';
 import { RouterLink } from '@angular/router';
 import { finalize } from 'rxjs';
 
@@ -17,11 +18,13 @@ import { InvoiceService } from '../../services/invoice.service';
 @Component({
   selector: 'app-invoice-detail-page',
   imports: [
+    CurrencyPipe,
     DatePipe,
     EmptyStateComponent,
     ErrorMessageComponent,
     LoadingComponent,
     MatButtonModule,
+    MatIconModule,
     MatTableModule,
     RouterLink
   ],
@@ -76,7 +79,7 @@ import { InvoiceService } from '../../services/invoice.service';
             </ng-container>
 
             <ng-container matColumnDef="productDescription">
-              <th mat-header-cell *matHeaderCellDef scope="col">Descrição</th>
+              <th mat-header-cell *matHeaderCellDef scope="col">Nome</th>
               <td mat-cell *matCellDef="let item">{{ item.productDescription }}</td>
             </ng-container>
 
@@ -85,13 +88,31 @@ import { InvoiceService } from '../../services/invoice.service';
               <td mat-cell *matCellDef="let item">{{ item.quantity }}</td>
             </ng-container>
 
+            <ng-container matColumnDef="unitPrice">
+              <th mat-header-cell *matHeaderCellDef scope="col">Valor unitário</th>
+              <td mat-cell *matCellDef="let item">
+                {{ item.unitPriceInCents / 100 | currency: 'BRL' : 'symbol' : '1.2-2' }}
+              </td>
+            </ng-container>
+
+            <ng-container matColumnDef="subtotal">
+              <th mat-header-cell *matHeaderCellDef scope="col">Subtotal</th>
+              <td mat-cell *matCellDef="let item">
+                {{ item.unitPriceInCents * item.quantity / 100 | currency: 'BRL' : 'symbol' : '1.2-2' }}
+              </td>
+            </ng-container>
+
             <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
             <tr mat-row *matRowDef="let row; columns: displayedColumns"></tr>
           </table>
         </div>
 
+        <p class="invoice-total">
+          Total: {{ totalInCents(invoice) / 100 | currency: 'BRL' : 'symbol' : '1.2-2' }}
+        </p>
+
         <div class="detail-actions">
-          <a mat-stroked-button routerLink="/invoices">Voltar para notas</a>
+          <a mat-stroked-button routerLink="/invoices"><mat-icon aria-hidden="true">arrow_back</mat-icon>Voltar para notas</a>
           @if (invoice.status === 'OPEN') {
             <button
               mat-flat-button
@@ -100,6 +121,7 @@ import { InvoiceService } from '../../services/invoice.service';
               [attr.aria-busy]="closing()"
               (click)="closeInvoice()"
             >
+              <mat-icon aria-hidden="true">print</mat-icon>
               {{ closing() ? 'Processando...' : 'Imprimir Nota' }}
             </button>
           }
@@ -146,10 +168,23 @@ import { InvoiceService } from '../../services/invoice.service';
       background: transparent;
     }
 
+    th.mat-mdc-header-cell,
+    td.mat-mdc-cell {
+      text-align: center;
+      vertical-align: middle;
+    }
+
     .detail-actions {
       display: flex;
       justify-content: flex-end;
+      gap: 1rem;
       margin-top: 2rem;
+    }
+
+    .invoice-total {
+      text-align: right;
+      font: var(--mat-sys-title-large);
+      margin: 1.5rem 0 0;
     }
   `
 })
@@ -164,8 +199,15 @@ export class InvoiceDetailPageComponent implements OnInit {
 
   readonly id = input.required<string>();
 
-  readonly displayedColumns = ['productCode', 'productDescription', 'quantity'];
+  readonly displayedColumns = ['productCode', 'productDescription', 'quantity', 'unitPrice', 'subtotal'];
   readonly statusLabel = invoiceStatusLabel;
+
+  totalInCents(invoice: Invoice): number {
+    return invoice.items.reduce(
+      (total, item) => total + (item.unitPriceInCents ?? 0) * item.quantity,
+      0
+    );
+  }
   readonly invoice = signal<Invoice | null>(null);
   readonly loading = signal(false);
   readonly closing = signal(false);

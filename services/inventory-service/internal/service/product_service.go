@@ -11,9 +11,10 @@ import (
 )
 
 type CreateProductInput struct {
-	Code        string
-	Description string
-	Balance     *int64
+	Code         string
+	Description  string
+	Balance      *int64
+	PriceInCents *int64
 }
 
 type ProductService struct {
@@ -34,14 +35,18 @@ func (s *ProductService) Create(ctx context.Context, input CreateProductInput) (
 	if description == "" {
 		return domain.Product{}, &domain.ValidationError{Field: "description"}
 	}
-	if input.Balance == nil || *input.Balance < 0 {
+	if input.Balance == nil || *input.Balance <= 0 {
 		return domain.Product{}, &domain.ValidationError{Field: "balance"}
+	}
+	if input.PriceInCents == nil || *input.PriceInCents <= 0 {
+		return domain.Product{}, &domain.ValidationError{Field: "priceInCents"}
 	}
 
 	product, err := s.repository.Create(ctx, domain.Product{
-		Code:        code,
-		Description: description,
-		Balance:     *input.Balance,
+		Code:         code,
+		Description:  description,
+		Balance:      *input.Balance,
+		PriceInCents: *input.PriceInCents,
 	})
 	if errors.Is(err, repository.ErrProductCodeConflict) {
 		return domain.Product{}, domain.ErrProductCodeAlreadyExists

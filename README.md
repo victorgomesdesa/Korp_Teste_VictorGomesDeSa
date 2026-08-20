@@ -10,7 +10,7 @@ fechamento, quando o Billing solicita o consumo ao Inventory. Esse ponto concent
 interessantes do desafio: concorrência sobre o mesmo saldo, idempotência da operação e recuperação
 quando uma das partes falha no meio do caminho.
 
-A documentação de arquitetura anterior ao desenvolvimento está em
+A documentação de arquitetura está em
 [`docs/technical-design.md`](./docs/technical-design.md) e os critérios de aceitação em
 [`docs/user-stories.md`](./docs/user-stories.md).
 
@@ -18,16 +18,17 @@ A documentação de arquitetura anterior ao desenvolvimento está em
 
 ## Funcionalidades
 
-- Cadastro e listagem de produtos, com consulta de saldo.
+- Cadastro e listagem de produtos, com nome, estoque e valor unitário.
 - Criação de notas fiscais com múltiplos itens.
-- Snapshots de código e descrição do produto gravados na nota.
-- Listagem e detalhe de notas, com status `OPEN`/`CLOSED`.
+- Snapshots de código, nome e valor unitário do produto gravados na nota.
+- Listagem e detalhe de notas, com produtos, valor total e status `OPEN`/`CLOSED`.
 - Fechamento da nota pela ação **Imprimir Nota**, com baixa atômica de estoque.
 - Idempotência do fechamento via `Idempotency-Key`.
 - Proteção de concorrência no banco, sem lock de aplicação.
 - Recuperação de operação após falha ou resposta perdida entre os serviços.
 - Mensagens de erro controladas em português, sem detalhes técnicos na interface.
 - Impressão da nota pelo navegador após o fechamento bem-sucedido.
+- Assistente em formato de chat para cadastrar produtos, criar notas e fechá-las por texto ou voz.
 
 Não existem edição ou exclusão de notas: uma nota `CLOSED` é imutável.
 
@@ -36,10 +37,15 @@ Não existem edição ou exclusão de notas: uma nota `CLOSED` é imutável.
 ## Arquitetura
 
 O frontend fala com os dois serviços: diretamente com o Inventory para produtos e com o Billing para
-notas. A comunicação entre Billing e Inventory acontece apenas no servidor, no fechamento.
+notas. O Billing consulta o Inventory na criação para validar a disponibilidade e obter os snapshots;
+no fechamento, solicita a baixa atômica do estoque. Essa comunicação nunca passa pelo navegador.
 
 ```text
 Frontend Angular
+      │
+      ├──────────────► Cloudflare Worker ─────► Whisper Large v3 Turbo
+      │                                      ├► Llama 3.3 70B
+      │                                      └► DeepSeek (revisão, se necessário)
       │
       ├──────────────► Inventory Service ──────► Inventory DB
       │                        ▲
@@ -68,6 +74,8 @@ orquestração com o Inventory e recuperação de operações interrompidas.
 
 **Banco:** PostgreSQL 16.
 
+**Assistente:** Cloudflare Workers, Workers AI, Wrangler, TypeScript e Vitest.
+
 **Infraestrutura:** Docker, Docker Compose, golang-migrate, GitHub Actions.
 
 **Testes:** `testing` e `httptest` da biblioteca padrão do Go, Vitest com o runner de testes do
@@ -81,13 +89,15 @@ Angular, e Playwright para a jornada E2E do frontend.
 .
 ├── frontend/                  Aplicação Angular
 │   ├── src/app/core/          Configuração, interceptors e modelos compartilhados
-│   ├── src/app/features/      Products e Invoices
+│   ├── src/app/features/      Products, Invoices e Assistant
 │   ├── src/app/shared/        Loading, empty state e mensagem de erro
 │   └── e2e/                   Jornada E2E com Playwright
 ├── services/
 │   ├── billing-service/       Invoice, fechamento e orquestração
 │   └── inventory-service/     Product, saldo e consumo de estoque
+├── worker/                    Transcrição e interpretação com Workers AI
 ├── docs/
+│   ├── ai-assistant.md
 │   ├── technical-design.md
 │   ├── user-stories.md
 │   └── diagrams/
@@ -106,7 +116,15 @@ dto), `internal/service`, `internal/repository`, `internal/domain`, `migrations`
 
 - Docker e Docker Compose.
 - Node.js 22 e npm, para rodar o frontend e seus testes.
+- Conta Cloudflare autenticada no Wrangler para executar o Workers AI.
 - Go não é necessário: os testes do backend rodam dentro de containers pelo Makefile.
+
+Instale as dependências JavaScript antes da primeira execução:
+
+```bash
+npm --prefix frontend ci
+npm --prefix worker ci
+```
 
 ---
 
@@ -135,7 +153,12 @@ conjunto de migrations, aplicadas por containers `migrate/migrate` separados.
 make up           # sobe bancos e serviços
 make migrate-up   # aplica as migrations dos dois serviços
 make frontend     # inicia o Angular em modo desenvolvimento
+make worker       # inicia o assistente em http://localhost:8787
 ```
+
+O Worker roda em `localhost`, mas o binding `AI` usa inferência remota da Cloudflare. Portanto, o
+assistente precisa de conexão com a internet e de uma sessão válida do Wrangler; Inventory, Billing e
+frontend continuam locais.
 
 Com o ambiente no ar:
 
@@ -144,6 +167,7 @@ Com o ambiente no ar:
 | Frontend | http://localhost:4200 |
 | Inventory Service | http://localhost:8080 |
 | Billing Service | http://localhost:8081 |
+| Assistente IA | http://localhost:8787 |
 
 Outros comandos úteis: `make ps`, `make logs`, `make build`, `make down` e `make reset` (este último
 recria o ambiente e **apaga os dados locais**). `make help` lista todos os targets.
@@ -167,9 +191,9 @@ Ambos os serviços expõem `GET /health` e respondem JSON. O envelope de erro é
 
 | Método | Rota | Descrição |
 |---|---|---|
-| `POST` | `/api/invoices` | Cria nota `OPEN` |
-| `GET` | `/api/invoices` | Lista notas |
-| `GET` | `/api/invoices/{id}` | Consulta nota com itens |
+| `POST` | `/api/invoices` | Valida estoque e cria nota `OPEN`, sem efetuar baixa |
+| `GET` | `/api/invoices` | Lista notas com códigos dos produtos e valor total |
+| `GET` | `/api/invoices/{id}` | Consulta nota com itens, valores e total |
 | `POST` | `/api/invoices/{id}/close` | Fecha a nota e consome o estoque |
 
 `POST /api/invoices/{id}/close` exige o header `Idempotency-Key` e não recebe corpo.
@@ -179,7 +203,7 @@ Ambos os serviços expõem `GET /health` e respondem JSON. O envelope de erro é
 Criar produto:
 
 ```json
-{ "code": "PROD-001", "description": "Teclado Mecânico", "balance": 10 }
+{ "code": "PROD-001", "description": "Teclado Mecânico", "balance": 10, "priceInCents": 19990 }
 ```
 
 Criar nota:
@@ -195,8 +219,8 @@ POST /api/invoices/15/close
 Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
 ```
 
-O cliente envia apenas `productId` e `quantity`. `number`, `status`, datas e os snapshots de código e
-descrição são definidos pelo backend.
+O cliente envia apenas `productId` e `quantity`. `number`, `status`, datas e os snapshots de código,
+nome e valor unitário são definidos pelo backend.
 
 ---
 
@@ -207,10 +231,12 @@ descrição são definidos pelo backend.
 - Quantidade de item precisa ser maior que zero.
 - Nota nasce `OPEN` com número sequencial gerado pelo banco.
 - Criar nota não reserva nem reduz estoque.
+- Uma nota não é criada quando a quantidade solicitada já supera o estoque disponível; o estoque é
+  validado novamente no fechamento para cobrir alterações concorrentes.
 - O fechamento é o único momento de baixa, e não existe baixa parcial.
 - Nota `CLOSED` é imutável e não pode ser fechada novamente.
-- Os itens guardam snapshots de código e descrição; alterações posteriores no produto não afetam
-  notas existentes.
+- Os itens guardam snapshots de código, nome e preço; alterações posteriores no produto não afetam
+  notas existentes nem seus totais.
 - Uma nota possui no máximo uma operação lógica de fechamento efetiva.
 
 ---
@@ -311,7 +337,7 @@ Alguns códigos relevantes:
 | `PRODUCT_CODE_ALREADY_EXISTS` | 409 | Código de produto já cadastrado |
 | `PRODUCT_NOT_FOUND` | 404 | Produto inexistente |
 | `INVOICE_NOT_FOUND` | 404 | Nota inexistente |
-| `INSUFFICIENT_STOCK` | 409 | Saldo insuficiente para o fechamento |
+| `INSUFFICIENT_STOCK` | 409 | Estoque insuficiente para criar ou fechar a nota |
 | `INVOICE_ALREADY_CLOSED` | 409 | Nota já fechada por outra operação |
 | `INVOICE_CLOSE_ALREADY_IN_PROGRESS` | 409 | Outra operação já assumiu o fechamento |
 | `IDEMPOTENCY_KEY_REUSED` | 409 | Chave reutilizada para outra operação lógica |
@@ -326,12 +352,12 @@ Validações semânticas de payload respondem `422` e erros inesperados responde
 A aplicação é standalone, com rotas carregadas sob demanda e estado local em Signals. Os formulários
 usam Reactive Forms tipados; a nota fiscal monta seus itens com `FormArray`, permitindo adicionar e
 remover linhas, e bloqueia o mesmo produto repetido tanto no validator quanto desabilitando a opção
-já escolhida nos outros itens. Produtos com saldo zero continuam selecionáveis, porque a criação não
-depende de estoque.
+já escolhida nos outros itens. Produtos sem estoque ficam indisponíveis, e uma quantidade acima do
+saldo é bloqueada antes da criação sem antecipar a baixa.
 
-Cada tela trata loading, estado vazio e erro de forma consistente: falhas de carregamento viram
-estado de página com ação de tentar novamente, enquanto falhas de ação aparecem em snackbar. Um
-interceptor adiciona `X-Request-Id` a todas as requisições.
+Cada tela trata loading, estado vazio e erro de forma consistente. Falhas que impedem a continuidade
+aparecem em destaque na própria página, com ação de tentar novamente quando aplicável; confirmações
+breves usam snackbar. Um interceptor adiciona `X-Request-Id` a todas as requisições.
 
 No fechamento, a página gera uma `Idempotency-Key` para a operação lógica, desabilita o botão
 enquanto processa e a mantém quando o resultado é ambíguo, de modo que um novo clique reenvia a mesma
@@ -339,12 +365,25 @@ chave. A impressão usa `window.print()` e só é disparada depois que a respost
 tela já reflete `CLOSED`; um bloco `@media print` esconde navegação, botões e notificações. Não há
 geração de PDF nem emissão fiscal.
 
+### Assistente IA
+
+O assistente tem interface de chat em português do Brasil e aceita texto ou áudio. O endpoint
+`POST /api/voice/intent` do Worker transcreve voz, interpreta o significado do comando e devolve uma
+intenção estruturada; ele não grava dados diretamente. A interface mostra o que entendeu e só chama
+as APIs existentes depois da confirmação do usuário.
+
+O código de produto aceita apenas o número na conversa e é normalizado para `PROD-<número>`. A
+interpretação considera pequenas falhas de transcrição e, quando a primeira extração vem incompleta,
+faz uma segunda revisão sem inventar números ausentes. Os limites atuais são 2.000 caracteres por
+comando de texto e 4 MiB por áudio. Contratos, modelos e exemplos estão em
+[`docs/ai-assistant.md`](./docs/ai-assistant.md).
+
 ---
 
 ## Testes
 
 ```bash
-make test        # unitários de backend e frontend
+make test        # unitários de backend, frontend e Worker
 make test-all    # unitários, integração e E2E
 ```
 
@@ -355,6 +394,7 @@ Targets individuais:
 | `make test-inventory` | Unitários do Inventory |
 | `make test-billing` | Unitários do Billing |
 | `make test-frontend` | Unitários do frontend |
+| `make test-worker` | Testes, tipos, configuração e empacotamento do Worker |
 | `make test-inventory-integration` | Integração do Inventory com PostgreSQL real e race detector |
 | `make test-billing-integration` | Integração do Billing com PostgreSQL real e race detector |
 | `make test-billing-e2e` | Billing ↔ Inventory sobre HTTP real, incluindo cenário com Inventory offline |
@@ -378,10 +418,10 @@ suas próprias fixtures com códigos únicos por execução e remove os dados ao
 
 ## Integração contínua
 
-O workflow [`ci.yml`](./.github/workflows/ci.yml) roda em push e pull request para `main`, com cinco
-jobs: testes e build do frontend, `go vet` e unitários de cada serviço, integração e E2E do backend,
-e por fim o E2E do frontend com Playwright. Os dois últimos sobem a stack com Docker Compose e
-publicam logs em caso de falha. O pipeline não faz deploy.
+O workflow [`ci.yml`](./.github/workflows/ci.yml) roda em push e pull request para `main`, com seis
+jobs: frontend; Worker; `go vet` e unitários de cada serviço; integração/E2E do backend; e E2E do
+frontend com Playwright. Os dois últimos sobem a stack com Docker Compose e publicam logs em caso de
+falha. O pipeline valida o empacotamento do Worker, mas não chama inferência remota nem faz deploy.
 
 ---
 
@@ -389,6 +429,7 @@ publicam logs em caso de falha. O pipeline não faz deploy.
 
 - [`docs/technical-design.md`](./docs/technical-design.md) — arquitetura, decisões e premissas.
 - [`docs/user-stories.md`](./docs/user-stories.md) — histórias, critérios de aceitação e cenários de teste.
+- [`docs/ai-assistant.md`](./docs/ai-assistant.md) — fluxo, contrato, modelos e operação do assistente.
 - [`docs/diagrams/`](./docs/diagrams/) — casos de uso, diagrama de classes e sequência do fechamento.
 
 ---
@@ -397,8 +438,8 @@ publicam logs em caso de falha. O pipeline não faz deploy.
 
 - **Bancos separados por serviço**, sem chave estrangeira cruzada: o `invoiceId` é referência lógica
   no Inventory.
-- **Snapshots na nota**: código e descrição são copiados na criação, então a nota permanece fiel ao
-  que foi emitido.
+- **Snapshots na nota**: código, nome e preço são copiados na criação, então a nota e seu total
+  permanecem fiéis ao que foi emitido.
 - **Transações locais e idempotência** no lugar de transação distribuída.
 - **Garantias no banco** — atualização condicional, `UNIQUE` e `CHECK` — em vez de coordenação em
   memória.

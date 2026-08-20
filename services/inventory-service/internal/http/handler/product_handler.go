@@ -34,9 +34,10 @@ func (h *ProductHandler) Create(c *gin.Context) {
 	}
 
 	product, err := h.service.Create(c.Request.Context(), service.CreateProductInput{
-		Code:        request.Code,
-		Description: request.Description,
-		Balance:     request.Balance,
+		Code:         request.Code,
+		Description:  request.Description,
+		Balance:      request.Balance,
+		PriceInCents: request.PriceInCents,
 	})
 	if err != nil {
 		writeProductError(c, err)

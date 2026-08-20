@@ -25,11 +25,13 @@ type InvoiceResponse struct {
 }
 
 type InvoiceSummaryResponse struct {
-	ID        int64                `json:"id"`
-	Number    int64                `json:"number"`
-	Status    domain.InvoiceStatus `json:"status"`
-	CreatedAt time.Time            `json:"createdAt"`
-	ClosedAt  *time.Time           `json:"closedAt"`
+	ID           int64                `json:"id"`
+	Number       int64                `json:"number"`
+	Status       domain.InvoiceStatus `json:"status"`
+	CreatedAt    time.Time            `json:"createdAt"`
+	ClosedAt     *time.Time           `json:"closedAt"`
+	ProductCodes []string             `json:"productCodes"`
+	TotalInCents int64                `json:"totalInCents"`
 }
 
 type InvoiceItemResponse struct {
@@ -37,6 +39,7 @@ type InvoiceItemResponse struct {
 	ProductID          int64  `json:"productId"`
 	ProductCode        string `json:"productCode"`
 	ProductDescription string `json:"productDescription"`
+	UnitPriceInCents   int64  `json:"unitPriceInCents"`
 	Quantity           int64  `json:"quantity"`
 }
 
@@ -53,6 +56,7 @@ func InvoiceFromDomain(invoice domain.Invoice) InvoiceResponse {
 			ProductID:          item.ProductID,
 			ProductCode:        item.ProductCode,
 			ProductDescription: item.ProductDescription,
+			UnitPriceInCents:   item.UnitPriceInCents,
 			Quantity:           item.Quantity,
 		})
 	}
@@ -71,11 +75,13 @@ func InvoiceSummariesFromDomain(invoices []domain.Invoice) []InvoiceSummaryRespo
 	response := make([]InvoiceSummaryResponse, 0, len(invoices))
 	for _, invoice := range invoices {
 		response = append(response, InvoiceSummaryResponse{
-			ID:        invoice.ID,
-			Number:    invoice.Number,
-			Status:    invoice.Status,
-			CreatedAt: invoice.CreatedAt,
-			ClosedAt:  invoice.ClosedAt,
+			ID:           invoice.ID,
+			Number:       invoice.Number,
+			Status:       invoice.Status,
+			CreatedAt:    invoice.CreatedAt,
+			ClosedAt:     invoice.ClosedAt,
+			ProductCodes: invoice.ProductCodes,
+			TotalInCents: invoice.TotalInCents,
 		})
 	}
 	return response

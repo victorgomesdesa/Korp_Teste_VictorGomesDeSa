@@ -60,20 +60,26 @@ func TestOnlineCloseConsumesStockAndClosesInvoice(t *testing.T) {
 	}
 }
 
-func TestOnlineCloseRejectsInsufficientStockAndReleasesOperation(t *testing.T) {
+func TestOnlineCreateRejectsInsufficientStockWithoutOpeningInvoice(t *testing.T) {
 	environment := newE2EEnvironment(t, true)
 	product := environment.createProduct(t, "PROD-E2E-003", "Monitor", 1)
-	invoice := environment.createInvoice(t, fmt.Sprintf(`{"items":[{"productId":%d,"quantity":2}]}`, product.ID))
-
-	response := environment.closeInvoice(t, invoice.ID, "key-1")
+	response := environment.request(
+		t,
+		http.MethodPost,
+		environment.billingURL+"/api/invoices",
+		fmt.Sprintf(`{"items":[{"productId":%d,"quantity":2}]}`, product.ID),
+	)
 	assertErrorResponse(t, response, http.StatusConflict, "INSUFFICIENT_STOCK")
 
 	if balance := environment.getProduct(t, product.ID).Balance; balance != 1 {
 		t.Fatalf("product balance = %d, want 1", balance)
 	}
-	status, closedAt := invoiceState(t, environment.billingDB, invoice.ID)
-	if status != "OPEN" || closedAt != nil {
-		t.Fatalf("invoice status=%s closedAt=%v, want OPEN", status, closedAt)
+	var invoices int
+	if err := environment.billingDB.QueryRow(context.Background(), "SELECT count(*) FROM invoices").Scan(&invoices); err != nil {
+		t.Fatalf("count invoices: %v", err)
+	}
+	if invoices != 0 {
+		t.Fatalf("invoices = %d, want zero", invoices)
 	}
 	if count := closeOperationCount(t, environment.billingDB); count != 0 {
 		t.Fatalf("close operations = %d, want none blocking a new attempt", count)

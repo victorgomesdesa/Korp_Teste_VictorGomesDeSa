@@ -59,10 +59,14 @@ func (s *InvoiceService) Create(ctx context.Context, input CreateInvoiceInput) (
 		if err != nil {
 			return domain.Invoice{}, mapInventoryError(err)
 		}
+		if inputItem.Quantity > product.Balance {
+			return domain.Invoice{}, domain.ErrInsufficientStock
+		}
 		invoice.Items = append(invoice.Items, domain.InvoiceItem{
 			ProductID:          product.ID,
 			ProductCode:        product.Code,
 			ProductDescription: product.Description,
+			UnitPriceInCents:   product.PriceInCents,
 			Quantity:           inputItem.Quantity,
 		})
 	}

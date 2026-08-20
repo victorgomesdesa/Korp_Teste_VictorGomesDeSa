@@ -142,6 +142,8 @@ func handleCreateInvoiceError(c *gin.Context, err error) {
 		writeInvoiceError(c, http.StatusNotFound, "PRODUCT_NOT_FOUND", "Produto não encontrado.")
 	case errors.Is(err, domain.ErrInventoryServiceUnavailable):
 		writeInvoiceError(c, http.StatusServiceUnavailable, "INVENTORY_SERVICE_UNAVAILABLE", "Serviço de estoque indisponível.")
+	case errors.Is(err, domain.ErrInsufficientStock):
+		writeInvoiceError(c, http.StatusConflict, "INSUFFICIENT_STOCK", "Estoque insuficiente para criar a nota fiscal.")
 	default:
 		_ = c.Error(err)
 		writeInvoiceError(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Erro interno do servidor.")

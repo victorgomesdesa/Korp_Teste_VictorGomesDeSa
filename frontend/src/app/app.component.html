@@ -4,8 +4,15 @@
       <a class="app-title" routerLink="/products">Sistema de Emissão de Notas Fiscais</a>
 
       <nav aria-label="Navegação principal">
-        <a mat-button routerLink="/products" routerLinkActive="active-link">Produtos</a>
-        <a mat-button routerLink="/invoices" routerLinkActive="active-link">Notas Fiscais</a>
+        <a mat-button routerLink="/products" routerLinkActive="active-link">
+          <mat-icon aria-hidden="true">inventory_2</mat-icon>Produtos
+        </a>
+        <a mat-button routerLink="/invoices" routerLinkActive="active-link">
+          <mat-icon aria-hidden="true">receipt_long</mat-icon>Notas Fiscais
+        </a>
+        <a mat-button routerLink="/assistant" routerLinkActive="active-link">
+          <mat-icon aria-hidden="true">smart_toy</mat-icon>Assistente
+        </a>
       </nav>
     </mat-toolbar>
   </header>

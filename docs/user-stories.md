@@ -5,7 +5,7 @@ Documento complementar ao [`technical-design.md`](./technical-design.md). O desi
 isso**.
 
 Todo critério segue `Dado / Quando / Então` e pode falhar. Cada cenário da
-[§19](#19-cenários-de-teste-derivados) deriva de um critério. O desafio da Korp é a fonte dos
+[§20](#20-cenários-de-teste-derivados) deriva de um critério. O desafio da Korp é a fonte dos
 requisitos; premissas e diferenciais adotados por nós estão identificados, sem serem apresentados
 como exigências do enunciado.
 
@@ -21,13 +21,14 @@ como exigências do enunciado.
 | **Nota fechada** | `Invoice.status = CLOSED`; estoque consumido e conteúdo imutável. |
 | **Imprimir Nota** | Uma única ação: solicita `POST /api/invoices/{id}/close`, aguarda `CLOSED`, atualiza a nota e inicia a impressão visual sem segundo clique. |
 | **Operação lógica** | Uma tentativa de fechar uma nota e seus retries, todos com a mesma `Idempotency-Key`. |
-| **Snapshot** | `productCode` e `productDescription` copiados para `InvoiceItem` na criação. |
+| **Snapshot** | `productCode`, `productDescription` e `unitPriceInCents` copiados para `InvoiceItem` na criação. |
 | **Consumo atômico** | Todos os itens são baixados na mesma transação local do Inventory, ou nenhum é. |
 
 ### 1.2 Níveis de teste
 
-`U` unitário (lógica pura, sem I/O) · `I` integração (API + PostgreSQL real e, quando indicado, os
-dois serviços) · `E` ponta a ponta (navegador).
+`U` unitário (lógica pura ou fronteira HTTP isolada, sem serviços externos) · `I` integração (API +
+PostgreSQL real e, quando indicado, os dois serviços) · `E` ponta a ponta (navegador). Os testes do
+Worker não dependem de inferência remota para permanecerem determinísticos no CI.
 
 ---
 
@@ -76,18 +77,22 @@ materializada, não presumida: `InvoiceCloseOperation` possui `UNIQUE(invoiceId)
 Billing. Assim, duas chaves concorrentes para a mesma nota não podem alcançar Inventory como duas
 operações distintas. Provada por T-14.3.
 
+**A-13: a criação valida o estoque disponível, mas não o reserva.** Uma quantidade acima da consulta
+atual é rejeitada antes de persistir; como outra nota ainda pode consumir o estoque depois, o
+fechamento valida novamente e é o único ponto de baixa. Provada por T-03.7 e T-10.1.
+
 ---
 
 ## 3. Fixture de Testes
 
 Infraestrutura de teste, não requisito da Korp.
 
-| `id` | Código | Descrição | Saldo inicial |
-|---:|---|---|---:|
-| 1 | `PROD-001` | Teclado Mecânico | 10 |
-| 2 | `PROD-002` | Mouse | 5 |
-| 3 | `PROD-003` | Monitor | 1 |
-| 4 | `PROD-004` | Cabo HDMI | 0 |
+| `id` | Código | Nome | Estoque inicial | Valor unitário |
+|---:|---|---|---:|---:|
+| 1 | `PROD-001` | Teclado Mecânico | 10 | R$ 199,90 |
+| 2 | `PROD-002` | Mouse | 5 | R$ 59,90 |
+| 3 | `PROD-003` | Monitor | 1 | R$ 899,00 |
+| 4 | `PROD-004` | Cabo HDMI | 0 | R$ 25,00 |
 
 | Nota | Número | Status | Itens |
 |---|---:|---|---|
@@ -97,9 +102,10 @@ Infraestrutura de teste, não requisito da Korp.
 | `INV-NO-STOCK` | 1004 | `OPEN` | `PROD-001 × 1`, `PROD-004 × 1` |
 | `INV-CLOSED-1` | 1005 | `CLOSED` | `PROD-002 × 1` |
 
-`INV-CLOSED-1` possui uma `InvoiceCloseOperation COMPLETED` associada à chave original da fixture.
-Cada teste restaura a fixture ou usa uma transação isolada; cenários concorrentes partem do mesmo
-saldo confirmado.
+`INV-NO-STOCK` representa uma nota criada quando o produto ainda possuía estoque e indisponível no
+momento posterior do fechamento. `INV-CLOSED-1` possui uma `InvoiceCloseOperation COMPLETED`
+associada à chave original da fixture. Cada teste restaura a fixture ou usa uma transação isolada;
+cenários concorrentes partem do mesmo estoque confirmado.
 
 ---
 
@@ -107,11 +113,12 @@ saldo confirmado.
 
 > **Como** usuário, **quero** cadastrar um produto, **para** disponibilizá-lo para notas futuras.
 
-**AC-01.1**: Dado `code = PROD-005`, descrição `Webcam` e `balance = 3`, quando o cadastro for
-enviado, então a API responde `201 Created` e o produto persistido possui exatamente esses valores.
+**AC-01.1**: Dado `code = PROD-005`, nome `Webcam`, `balance = 3` e valor R$ 249,90, quando o cadastro
+for enviado, então a API responde `201 Created` e o produto persistido possui exatamente esses
+valores, incluindo `priceInCents = 24990`.
 
-**AC-01.2**: Dado um cadastro com `code` vazio, descrição vazia ou `balance < 0`, quando enviado,
-então a API responde `422` com código estável e nenhum produto é criado.
+**AC-01.2**: Dado um cadastro com `code` vazio, nome vazio, `balance < 0` ou `priceInCents < 0`,
+quando enviado, então a API responde `422` com código estável e nenhum produto é criado.
 
 **AC-01.3**: Dado que `PROD-001` já existe, quando outro produto usar o mesmo código, então a API
 responde `409 PRODUCT_CODE_ALREADY_EXISTS` e o produto original permanece inalterado. *(A-1)*
@@ -149,6 +156,9 @@ continua 10. *(A-4)*
 enviada, então Billing responde `503 INVENTORY_SERVICE_UNAVAILABLE` e não persiste `Invoice` nem
 `InvoiceItem`; uma tentativa manual posterior continua possível.
 
+**AC-03.7**: Dado um produto com estoque 3, quando a criação solicitar quantidade 4, então Billing
+responde `409 INSUFFICIENT_STOCK`, não persiste a nota e não altera o estoque. *(A-13)*
+
 ## 7. US-04: Adicionar produtos à nota
 
 > **Como** usuário, **quero** incluir múltiplos produtos e quantidades, **para** representar a nota.
@@ -156,8 +166,9 @@ enviada, então Billing responde `503 INVENTORY_SERVICE_UNAVAILABLE` e não pers
 **AC-04.1**: Dados `PROD-001 × 2` e `PROD-002 × 1`, quando a nota for criada, então ela contém dois
 `InvoiceItem` com as quantidades informadas.
 
-**AC-04.2**: Dado um produto válido, quando a nota for criada e depois sua descrição for alterada no
-Inventory, então a nota mantém `productCode` e `productDescription` originais. *(A-7)*
+**AC-04.2**: Dado um produto válido, quando a nota for criada e depois seu nome ou valor for alterado
+no Inventory, então a nota mantém `productCode`, `productDescription` e `unitPriceInCents` originais.
+*(A-7)*
 
 **AC-04.3**: Dada uma nota sem itens, com `quantity <= 0` ou `productId` duplicado, quando enviada,
 então responde `422` (`INVALID_QUANTITY` quando aplicável) e nada é persistido. *(A-11)*
@@ -167,14 +178,16 @@ então responde `422` (`INVALID_QUANTITY` quando aplicável) e nada é persistid
 > **Como** usuário, **quero** listar notas, **para** acompanhar seu processamento.
 
 **AC-05.1**: Dada a fixture, quando `GET /api/invoices` for solicitado, então responde `200` com
-número, status e data das cinco notas, sem calcular status no frontend.
+número, status, data, códigos dos produtos e `totalInCents` das cinco notas, sem recalcular os dados
+de domínio no frontend. A interface mostra no máximo cinco códigos e resume os demais.
 
 ## 9. US-06: Visualizar detalhes da nota
 
 > **Como** usuário, **quero** abrir uma nota, **para** ver status e itens.
 
 **AC-06.1**: Dada `INV-OPEN-1`, quando seus detalhes forem solicitados, então a API responde `200`
-com `OPEN`, dois itens, snapshots e quantidades; para id inexistente responde `404 INVOICE_NOT_FOUND`.
+com `OPEN`, dois itens, snapshots de código/nome/preço, quantidades, subtotais deriváveis e total;
+para id inexistente responde `404 INVOICE_NOT_FOUND`.
 
 ## 10. US-07: Imprimir/fechar uma nota aberta
 
@@ -279,14 +292,40 @@ INVOICE_CLOSE_ALREADY_IN_PROGRESS` e `503 INVENTORY_SERVICE_UNAVAILABLE`, quando
 interface mostra mensagens específicas em português, sem stack trace, corpo JSON bruto ou decisão
 local sobre o status.
 
+## 19. US-16: Operar por assistente em linguagem natural
+
+> **Como** usuário, **quero** usar texto ou voz em português, **para** operar o sistema com menos campos e cliques.
+
+**AC-16.1**: Dado um comando de texto ou áudio em pt-BR para cadastrar produto, criar nota ou fechar
+nota, quando interpretado, então o Worker devolve transcrição e intenção estruturada sem executar
+qualquer escrita.
+
+**AC-16.2**: Dado o número `20` como código de produto, quando a intenção for normalizada, então o
+resumo mostra `PROD-20`. Números não falados não são inventados.
+
+**AC-16.3**: Dada uma palavra cortada ou pequena falha de transcrição com contexto suficiente, quando
+o modelo interpretar o comando, então prioriza o significado provável; se uma intenção conhecida
+vier incompleta, uma segunda revisão tenta recuperar apenas valores presentes na transcrição.
+
+**AC-16.4**: Dada uma referência por nome com pequena diferença, quando uma nota for confirmada,
+então a interface resolve somente uma correspondência suficientemente semelhante e não ambígua; caso
+contrário, informa que não encontrou o produto e não cria a nota.
+
+**AC-16.5**: Dada qualquer intenção reconhecida, quando o resumo for exibido, então nenhuma API de
+escrita é chamada até o usuário selecionar **Confirmar**; campos obrigatórios ausentes bloqueiam essa
+confirmação.
+
+**AC-16.6**: Dados texto acima de 2.000 caracteres, áudio vazio ou acima de 4 MiB e JSON inválido,
+quando enviados ao Worker, então a requisição é rejeitada com erro controlado antes da inferência.
+
 ---
 
-## 19. Cenários de Teste Derivados
+## 20. Cenários de Teste Derivados
 
 | ID | Critério | Cenário | Nível | Esperado |
 |---|---|---|:---:|---|
-| T-01.1 | AC-01.1 | Cadastrar `PROD-005`, Webcam, saldo 3 | I | `201`; valores persistidos |
-| T-01.2 | AC-01.2 | Código/descrição vazios e saldos -1 | I | `422`; zero inserções |
+| T-01.1 | AC-01.1 | Cadastrar `PROD-005`, Webcam, estoque 3, R$ 249,90 | I | `201`; valores persistidos |
+| T-01.2 | AC-01.2 | Código/nome vazios, estoque ou preço negativos | I | `422`; zero inserções |
 | T-01.3 | AC-01.3 | Cadastrar outro `PROD-001` | I | `409 PRODUCT_CODE_ALREADY_EXISTS`; original intacto |
 | T-02.1 | AC-02.1 | Listar produtos da fixture | I | Quatro produtos, inclusive saldo zero |
 | T-02.2 | AC-02.2 | Buscar id 1 e id inexistente | I | `200 PROD-001`; `404 PRODUCT_NOT_FOUND` |
@@ -296,11 +335,12 @@ local sobre o status.
 | T-03.4 | AC-03.4 | Criar nota `PROD-001 × 7` | I | Saldo permanece 10 |
 | T-03.5 | AC-03.5 | Criar nota com `productId = 999999` | I | `404 PRODUCT_NOT_FOUND`; nenhuma nota ou item |
 | T-03.6 | AC-03.6 | Inventory offline durante a criação | I | `503`; nenhuma nota ou item |
+| T-03.7 | AC-03.7 | Criar nota com quantidade acima do estoque | I | `409 INSUFFICIENT_STOCK`; nenhuma nota ou baixa |
 | T-04.1 | AC-04.1 | Criar nota com dois produtos | I | Dois `InvoiceItem` |
-| T-04.2 | AC-04.2 | Criar nota e alterar descrição no Inventory | I | Snapshot da nota permanece original; sem FK cruzada |
+| T-04.2 | AC-04.2 | Criar nota e alterar nome/preço no Inventory | I | Snapshots e total permanecem originais; sem FK cruzada |
 | T-04.3 | AC-04.3 | Vazio, quantidade 0/-1 ou `productId` duplicado | I | `422`; nenhuma nota ou item |
-| T-05.1 | AC-05.1 | Listar notas | I | Cinco notas e status do backend |
-| T-06.1 | AC-06.1 | Detalhar `INV-OPEN-1` e id inexistente | I | Detalhes completos; depois `404` |
+| T-05.1 | AC-05.1 | Listar notas | I | Notas com status, códigos e total do backend |
+| T-06.1 | AC-06.1 | Detalhar `INV-OPEN-1` e id inexistente | I | Itens com preços e total; depois `404` |
 | T-07.1 | AC-07.1 | Fechar `INV-OPEN-1` com chave inédita | I | `200`, `CLOSED`, `closedAt` preenchido |
 | T-07.2 | AC-07.2 | Acionar Imprimir Nota | E | Um clique: loading → `CLOSED` confirmado → impressão visual |
 | T-08.1 | AC-08.1 | Fechar `INV-CLOSED-1` com nova chave | I | `409`; saldos inalterados |
@@ -318,9 +358,13 @@ local sobre o status.
 | T-14.4 | AC-14.4 | Mesma chave + Invoice diferente + mesmos itens | I | `409 IDEMPOTENCY_KEY_REUSED`; nenhuma baixa |
 | T-15.1 | AC-15.1 | Manter resposta pendente e depois concluir/falhar | E | Loading e botão refletem a request ativa |
 | T-15.2 | AC-15.2 | Injetar cada erro de domínio | U | Mensagem PT-BR específica; nenhum erro cru |
+| T-16.1 | AC-16.1, AC-16.5 | Interpretar e depois confirmar cadastro | U | Nenhuma escrita antes da confirmação; payload correto depois |
+| T-16.2 | AC-16.2 | Normalizar código numérico | U | `20` resulta em `PROD-20` |
+| T-16.3 | AC-16.4 | Resolver nome com pequeno erro e nome ambíguo | U | Match único aceito; ambíguo rejeitado |
+| T-16.4 | AC-16.6 | Enviar JSON inválido e texto acima do limite | U | `400` e `413`, sem chamada à IA |
 | T-E2E.1 | US-01 → US-09, US-15 | Cadastrar produtos → criar nota → ver `OPEN` → Imprimir Nota → ver `CLOSED` → consultar estoque | E | Nota fechada e saldos reduzidos exatamente pelas quantidades |
 
-### 19.1 Força do teste de concorrência
+### 20.1 Força do teste de concorrência
 
 T-13.1 usa duas conexões reais ao PostgreSQL e uma barreira para que ambas as operações iniciem com
 o mesmo saldo. A checagem prévia de disponibilidade é substituída por um stub que permite as duas
@@ -332,7 +376,7 @@ T-14.3 usa duas conexões reais ao PostgreSQL do Billing e uma barreira depois d
 `UNIQUE(invoiceId)` pode escolher uma vencedora. O stub do cliente Inventory contabiliza chamadas e
 deve receber exatamente uma. Se o teste passar sem a constraint, o teste está incorreto.
 
-### 19.2 Rastreabilidade das premissas
+### 20.2 Rastreabilidade das premissas
 
 | Premissa | Prova ou justificativa |
 |---|---|
@@ -348,12 +392,13 @@ deve receber exatamente uma. Se o teste passar sem a constraint, o teste está i
 | A-10 | T-11.1 |
 | A-11 | T-04.3 |
 | A-12 | T-14.3 |
+| A-13 | T-03.7, T-10.1 |
 
 ---
 
-## 20. Notas
+## 21. Notas
 
-### 20.1 Regras de negócio consolidadas
+### 21.1 Regras de negócio consolidadas
 
 | ID | Regra |
 |---|---|
@@ -371,17 +416,16 @@ deve receber exatamente uma. Se o teste passar sem a constraint, o teste está i
 | RN-12 | Operações concorrentes nunca produzem saldo negativo |
 | RN-13 | Uma `Invoice` possui no máximo uma operação lógica efetiva de fechamento |
 | RN-14 | A `Idempotency-Key` identifica a operação de uma `Invoice` específica, não apenas seus produtos |
+| RN-15 | Criar nota rejeita indisponibilidade atual sem reservar; fechar revalida e efetua a baixa |
+| RN-16 | A IA nunca executa uma escrita sem confirmação explícita do usuário |
 
-### 20.2 Fora do escopo deliberadamente
+### 21.2 Fora do escopo deliberadamente
 
 Autenticação e autorização; clientes e fornecedores; impostos; cálculo fiscal real; NF-e oficial;
 XML fiscal; integração SEFAZ; certificados digitais; pagamentos; edição de nota fechada; Kubernetes;
-message broker; API Gateway; dashboards complexos; IA no MVP.
+message broker; API Gateway; dashboards complexos; execução autônoma de ações pela IA.
 
-IA aparece como opcional no desafio, mas foi deixada de fora para priorizar concorrência,
-idempotência, resiliência e observabilidade, que protegem diretamente a confiabilidade do domínio.
-
-### 20.3 Política de idioma
+### 21.3 Política de idioma
 
 Documentação, interface e mensagens ao usuário em português do Brasil. Classes, campos, status,
 serviços e rotas permanecem em inglês: `Product`, `InvoiceItem`, `OPEN`, `productId`,

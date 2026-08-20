@@ -136,6 +136,7 @@ function productFixture(product: Partial<Product> = {}): Product {
     code: 'PROD-001',
     description: 'Teclado Mecânico',
     balance: 10,
+    priceInCents: 19990,
     createdAt: '2026-08-17T12:00:00Z',
     updatedAt: '2026-08-17T12:00:00Z',
     ...product

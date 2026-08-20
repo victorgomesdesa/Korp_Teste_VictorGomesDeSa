@@ -5,6 +5,7 @@
 
 # Angular / Node.js
 node_modules/
+.wrangler/
 dist/
 .angular/
 npm-debug.log*

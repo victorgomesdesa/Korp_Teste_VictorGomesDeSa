@@ -29,6 +29,7 @@ func (stub productRepositoryStub) FindByID(ctx context.Context, id int64) (domai
 
 func TestProductServiceCreateNormalizesAndCreatesValidProduct(t *testing.T) {
 	balance := int64(3)
+	priceInCents := int64(14990)
 	repositoryCalled := false
 	productRepository := productRepositoryStub{
 		createFunc: func(_ context.Context, product domain.Product) (domain.Product, error) {
@@ -45,9 +46,10 @@ func TestProductServiceCreateNormalizesAndCreatesValidProduct(t *testing.T) {
 	}
 
 	product, err := NewProductService(productRepository).Create(context.Background(), CreateProductInput{
-		Code:        "  PROD-005  ",
-		Description: "  Webcam  ",
-		Balance:     &balance,
+		Code:         "  PROD-005  ",
+		Description:  "  Webcam  ",
+		Balance:      &balance,
+		PriceInCents: &priceInCents,
 	})
 	if err != nil {
 		t.Fatalf("Create() returned an unexpected error: %v", err)
@@ -62,17 +64,22 @@ func TestProductServiceCreateNormalizesAndCreatesValidProduct(t *testing.T) {
 
 func TestProductServiceCreateRejectsInvalidInput(t *testing.T) {
 	zero := int64(0)
+	positive := int64(1)
 	negative := int64(-1)
 	tests := []struct {
 		name  string
 		input CreateProductInput
 	}{
-		{name: "empty code", input: CreateProductInput{Code: "", Description: "Produto", Balance: &zero}},
-		{name: "whitespace code", input: CreateProductInput{Code: "   ", Description: "Produto", Balance: &zero}},
-		{name: "empty description", input: CreateProductInput{Code: "PROD-001", Description: "", Balance: &zero}},
-		{name: "whitespace description", input: CreateProductInput{Code: "PROD-001", Description: "   ", Balance: &zero}},
-		{name: "missing balance", input: CreateProductInput{Code: "PROD-001", Description: "Produto"}},
-		{name: "negative balance", input: CreateProductInput{Code: "PROD-001", Description: "Produto", Balance: &negative}},
+		{name: "empty code", input: CreateProductInput{Code: "", Description: "Produto", Balance: &positive, PriceInCents: &positive}},
+		{name: "whitespace code", input: CreateProductInput{Code: "   ", Description: "Produto", Balance: &positive, PriceInCents: &positive}},
+		{name: "empty description", input: CreateProductInput{Code: "PROD-001", Description: "", Balance: &positive, PriceInCents: &positive}},
+		{name: "whitespace description", input: CreateProductInput{Code: "PROD-001", Description: "   ", Balance: &positive, PriceInCents: &positive}},
+		{name: "missing balance", input: CreateProductInput{Code: "PROD-001", Description: "Produto", PriceInCents: &positive}},
+		{name: "zero balance", input: CreateProductInput{Code: "PROD-001", Description: "Produto", Balance: &zero, PriceInCents: &positive}},
+		{name: "negative balance", input: CreateProductInput{Code: "PROD-001", Description: "Produto", Balance: &negative, PriceInCents: &positive}},
+		{name: "missing price", input: CreateProductInput{Code: "PROD-001", Description: "Produto", Balance: &positive}},
+		{name: "zero price", input: CreateProductInput{Code: "PROD-001", Description: "Produto", Balance: &positive, PriceInCents: &zero}},
+		{name: "negative price", input: CreateProductInput{Code: "PROD-001", Description: "Produto", Balance: &positive, PriceInCents: &negative}},
 	}
 
 	for _, test := range tests {
@@ -94,6 +101,7 @@ func TestProductServiceCreateRejectsInvalidInput(t *testing.T) {
 
 func TestProductServiceCreateTranslatesCodeConflict(t *testing.T) {
 	balance := int64(1)
+	priceInCents := int64(100)
 	productRepository := productRepositoryStub{
 		createFunc: func(context.Context, domain.Product) (domain.Product, error) {
 			return domain.Product{}, repository.ErrProductCodeConflict
@@ -101,9 +109,10 @@ func TestProductServiceCreateTranslatesCodeConflict(t *testing.T) {
 	}
 
 	_, err := NewProductService(productRepository).Create(context.Background(), CreateProductInput{
-		Code:        "PROD-001",
-		Description: "Produto",
-		Balance:     &balance,
+		Code:         "PROD-001",
+		Description:  "Produto",
+		Balance:      &balance,
+		PriceInCents: &priceInCents,
 	})
 	if !errors.Is(err, domain.ErrProductCodeAlreadyExists) {
 		t.Fatalf("Create() error = %v, want product code conflict", err)

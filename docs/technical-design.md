@@ -1,7 +1,6 @@
 # Design Técnico: Sistema de Emissão de Notas Fiscais
 
-Documentação de arquitetura anterior ao desenvolvimento. Este documento descreve **como** o sistema
-será construído e **por que** cada decisão foi tomada.
+Este documento descreve **como** o sistema está construído e **por que** cada decisão foi tomada.
 
 Os critérios funcionais e cenários de teste detalhados estão documentados em
 [`user-stories.md`](./user-stories.md).
@@ -29,6 +28,7 @@ O sistema resolve três problemas centrais:
 | Backend | Go + Gin, Go Modules, `pgx` e `golang-migrate` |
 | Banco de dados | PostgreSQL |
 | Serviços | `inventory-service` + `billing-service` |
+| Assistente | Cloudflare Worker + Workers AI + TypeScript |
 | Ambiente e CI | Docker + Docker Compose; GitHub Actions |
 
 **Origem das regras.** Cadastro de produtos, criação de notas com múltiplos itens, ação de
@@ -46,6 +46,7 @@ Dois microsserviços reais, com ownership exclusivo de dados:
 
 ```text
 Angular
+  ├── HTTP/JSON ──► Cloudflare Worker ─► Workers AI (inferência remota)
   ├── HTTP/JSON ──► Inventory API ─► Inventory Service ─► Inventory Repository ─► inventory_db
   └── HTTP/JSON ──► Billing API   ─► Billing Service   ─► Billing Repository   ─► billing_db
                                       │
@@ -94,20 +95,23 @@ chamadas que podem falhar.
 ### 3.2 Criação não é fechamento
 
 O cliente envia somente `productId` e `quantity`. Em `POST /api/invoices`, o Billing consulta o
-Inventory, valida todos os ids e recebe `code` e `description`. Só então grava `Invoice` e
-`InvoiceItem` na mesma transação local, usando os dados retornados para os snapshots. Angular nunca é
-autoridade sobre `productCode` ou `productDescription`.
+Inventory, valida todos os ids, confirma que a quantidade atual é suficiente e recebe `code`,
+`description`, `balance` e `priceInCents`. Só então grava `Invoice` e `InvoiceItem` na mesma transação
+local, usando os dados retornados para os snapshots. Angular nunca é autoridade sobre
+`productCode`, `productDescription` ou `unitPriceInCents`.
 
 ```text
-Angular → Billing → Inventory: consultar/validar productIds
-Billing ← Inventory: id + code + description
+Angular → Billing → Inventory: consultar/validar productIds e disponibilidade atual
+Billing ← Inventory: id + code + description + balance + priceInCents
 Billing → billing_db: criar Invoice OPEN + InvoiceItems
 ```
 
 Se Inventory estiver indisponível, Billing retorna `503 INVENTORY_SERVICE_UNAVAILABLE` e não persiste
-`Invoice` nem `InvoiceItem`. Se algum id não existir, retorna `404 PRODUCT_NOT_FOUND`. Não há nota
-incompleta, compensação ou fila; uma tentativa manual posterior é suficiente. A criação não reserva
-nem reduz estoque. O consumo ocorre somente em `POST /api/invoices/{id}/close` (A-4).
+`Invoice` nem `InvoiceItem`. Se algum id não existir, retorna `404 PRODUCT_NOT_FOUND`; se a quantidade
+já superar o estoque consultado, retorna `409 INSUFFICIENT_STOCK`. Não há nota incompleta,
+compensação ou fila; uma tentativa manual posterior é suficiente. A criação não reserva nem reduz
+estoque, portanto a disponibilidade é validada novamente no fechamento. O consumo ocorre somente em
+`POST /api/invoices/{id}/close` (A-4, A-13).
 
 ### 3.3 Numeração sequencial
 
@@ -187,11 +191,13 @@ a `InvoiceCloseOperation` preserva a chave para retry. Não há retry automátic
   item antes do envio. O backend repete todas as validações relevantes.
 - **HttpClient** encapsula os contratos REST. Um interceptor propaga `X-Request-Id`; outro ponto
   comum traduz o envelope de erro para mensagens controladas, sem mover regra de negócio ao cliente.
-- **RxJS** usa `switchMap` quando o fechamento bem-sucedido deve recarregar a nota, `catchError` para
-  converter erros HTTP em estado de tela e `finalize` para encerrar o loading em sucesso ou falha.
+- **RxJS** usa `switchMap` na orquestração do assistente e `finalize` para encerrar loading em sucesso
+  ou falha. Os callbacks de erro convertem o envelope HTTP em estado de tela controlado.
 - **Angular Material** fornece tabela, formulário, feedback e estados desabilitados consistentes.
-- **Ciclo de vida.** `ngOnInit` carrega dados iniciais. Recursos/subscriptions duradouros usam
-  `takeUntilDestroyed`; chamadas consumidas pelo template preferem `AsyncPipe`.
+- **Ciclo de vida.** `ngOnInit` carrega o detalhe da nota quando o input de rota já está disponível;
+  `afterNextRender` agenda `window.print()` somente depois que a resposta de fechamento atualizou a
+  tela. As chamadas HTTP são finitas e tratadas por `subscribe`, com `finalize` encerrando o estado
+  de carregamento.
 
 Enquanto o fechamento estiver ativo, a interface exibe processamento e desabilita **Imprimir Nota**.
 No sucesso, o mesmo fluxo atualiza a nota confirmada como `CLOSED` e inicia a impressão visual; não
@@ -220,6 +226,23 @@ Exemplo de investigação de indisponibilidade:
 Com `request_id=req-7f2`, o operador correlaciona a tentativa no Billing e a ausência ou atraso no
 Inventory. Métricas e traces podem ser adicionados depois sem acoplar o domínio.
 
+### 3.12 Assistente IA
+
+O Cloudflare Worker expõe `POST /api/voice/intent` para texto JSON ou bytes de áudio. Whisper Large
+v3 Turbo transcreve áudio com idioma `pt`; Llama 3.3 70B extrai uma intenção conforme JSON Schema. Se
+uma intenção conhecida vier sem campos obrigatórios, DeepSeek R1 Distill Qwen 32B faz uma segunda
+revisão da transcrição original e da extração parcial. A normalização final é determinística: aceita
+o número isolado de produto, aplica o prefixo `PROD-`, remove campos incompatíveis com a ação e
+descarta itens inválidos.
+
+O Worker não chama Inventory nem Billing. O Angular apresenta a interpretação em uma conversa,
+resolve códigos ou nomes contra os produtos disponíveis e exige confirmação antes de executar a ação
+nas APIs de domínio. Essa fronteira evita que uma inferência probabilística cause escrita sem
+consentimento. Texto é limitado a 2.000 caracteres, áudio a 4 MiB e CORS aceita apenas a origem
+configurada. Em desenvolvimento, o processo Wrangler é local, mas o binding `AI` é remoto.
+
+O contrato operacional completo está em [`ai-assistant.md`](./ai-assistant.md).
+
 ---
 
 ## 4. Modelo de Dados
@@ -235,19 +258,19 @@ Invoice 1 ──◆ 1..* InvoiceItem                 Product
 
 | Domínio | Entidade | Atributos | Restrições |
 |---|---|---|---|
-| Inventory | `Product` | `id BIGINT`, `code`, `description`, `balance`, `createdAt`, `updatedAt` | `code` único; `balance >= 0` |
+| Inventory | `Product` | `id BIGINT`, `code`, `description`, `balance`, `priceInCents`, `createdAt`, `updatedAt` | `code` único; `balance >= 0`; `priceInCents >= 0` |
 | Inventory | `StockOperation` | `id BIGINT`, `invoiceId BIGINT`, `idempotencyKey`, `fingerprint`, `result`, `createdAt` | chave única; `invoiceId` é referência lógica sem FK; infraestrutura de consistência |
 | Billing | `Invoice` | `id BIGINT`, `number`, `status`, `createdAt`, `closedAt` | `number` único/sequencial; `status ∈ {OPEN,CLOSED}`; fechada é imutável |
-| Billing | `InvoiceItem` | `id BIGINT`, `invoiceId BIGINT`, `productId BIGINT`, `productCode`, `productDescription`, `quantity` | `quantity > 0`; FK local somente para `Invoice` |
+| Billing | `InvoiceItem` | `id BIGINT`, `invoiceId BIGINT`, `productId BIGINT`, `productCode`, `productDescription`, `unitPriceInCents`, `quantity` | `quantity > 0`; `unitPriceInCents >= 0`; FK local somente para `Invoice` |
 | Billing | `InvoiceCloseOperation` | `id BIGINT`, `invoiceId BIGINT`, `idempotencyKey`, `status`, `result`, `createdAt`, `completedAt` | FK local para `Invoice`; `UNIQUE(invoiceId)`; chave única; `status ∈ {PROCESSING,COMPLETED}` |
 
 IDs de entidade são `BIGINT` no PostgreSQL e `int64` em Go. A `Idempotency-Key` continua sendo uma
 string, normalmente um UUID da operação, e não se confunde com o id numérico de nenhuma entidade.
 
-`productCode` e `productDescription` são snapshots obtidos na criação. Assim, uma alteração futura no
-cadastro não reescreve a representação histórica da nota. Itens repetidos do mesmo produto são
-rejeitados como payload inválido (A-11); isso mantém o contrato inequívoco, embora Inventory ainda
-agregue defensivamente as quantidades antes do consumo.
+`productCode`, `productDescription` e `unitPriceInCents` são snapshots obtidos na criação. Assim, uma
+alteração futura no cadastro não reescreve a representação histórica nem o total da nota. Itens
+repetidos do mesmo produto são rejeitados como payload inválido (A-11); isso mantém o contrato
+inequívoco, embora Inventory ainda agregue defensivamente as quantidades antes do consumo.
 
 ---
 
@@ -290,11 +313,13 @@ Exemplo de criação:
 {"items":[{"productId":1,"quantity":2},{"productId":2,"quantity":1}]}
 ```
 
-`number`, `status`, snapshots e datas não são aceitos do cliente.
+`number`, `status`, snapshots, totais e datas não são aceitos do cliente. A listagem devolve até os
+códigos dos produtos e `totalInCents`; o detalhe devolve o preço unitário de cada item, permitindo o
+mesmo total sem consultar novamente o Inventory.
 
 Para formar os snapshots, Billing consulta Inventory com os `productId`. Produto inexistente resulta
-em `404 PRODUCT_NOT_FOUND`; indisponibilidade resulta em `503` e nenhuma linha é persistida no banco
-Billing.
+em `404 PRODUCT_NOT_FOUND`, quantidade acima do estoque atual em `409 INSUFFICIENT_STOCK` e
+indisponibilidade em `503`; em todos esses casos nenhuma linha é persistida no banco Billing.
 
 Contrato conceitual interno de consumo:
 
@@ -390,15 +415,16 @@ está em [`user-stories.md`](./user-stories.md#2-premissas).
 | **A-10** | Timeout Billing → Inventory é inicialmente 3 segundos e configurável |
 | **A-11** | Uma nota não aceita o mesmo `productId` em duas linhas; quantidades são agregadas defensivamente no Inventory |
 | **A-12** | Uma `Invoice` possui uma única operação lógica efetiva de fechamento; a garantia é a constraint `UNIQUE(invoiceId)` no Billing |
+| **A-13** | A criação rejeita quantidade acima do estoque consultado, sem reservar; o fechamento revalida e efetua a baixa |
 
 ### Fora do escopo
 
 Autenticação e autorização; clientes e fornecedores; impostos; cálculo fiscal real; NF-e oficial;
 XML fiscal; SEFAZ; certificados digitais; pagamentos; edição de nota fechada; Kubernetes; message
-broker; API Gateway; dashboards complexos; IA no MVP.
+broker; API Gateway; dashboards complexos.
 
-IA é opcional no desafio, mas foi deliberadamente adiada. Concorrência, idempotência, resiliência e
-observabilidade têm impacto direto na confiabilidade do fluxo de faturamento e recebem prioridade.
+O assistente opcional foi implementado em um Cloudflare Worker. Ele interpreta texto e voz em
+português do Brasil, mas toda escrita continua condicionada à confirmação explícita na interface.
 
 ### Convenção de idioma
 

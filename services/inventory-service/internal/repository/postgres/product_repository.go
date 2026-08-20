@@ -24,15 +24,16 @@ func NewProductRepository(pool *pgxpool.Pool) *ProductRepository {
 
 func (r *ProductRepository) Create(ctx context.Context, product domain.Product) (domain.Product, error) {
 	const query = `
-		INSERT INTO products (code, description, balance)
-		VALUES ($1, $2, $3)
-		RETURNING id, code, description, balance, created_at, updated_at`
+		INSERT INTO products (code, description, balance, price_in_cents)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, code, description, balance, price_in_cents, created_at, updated_at`
 
-	err := r.pool.QueryRow(ctx, query, product.Code, product.Description, product.Balance).Scan(
+	err := r.pool.QueryRow(ctx, query, product.Code, product.Description, product.Balance, product.PriceInCents).Scan(
 		&product.ID,
 		&product.Code,
 		&product.Description,
 		&product.Balance,
+		&product.PriceInCents,
 		&product.CreatedAt,
 		&product.UpdatedAt,
 	)
@@ -51,7 +52,7 @@ func (r *ProductRepository) Create(ctx context.Context, product domain.Product) 
 
 func (r *ProductRepository) List(ctx context.Context) ([]domain.Product, error) {
 	const query = `
-		SELECT id, code, description, balance, created_at, updated_at
+		SELECT id, code, description, balance, price_in_cents, created_at, updated_at
 		FROM products
 		ORDER BY id ASC`
 
@@ -69,6 +70,7 @@ func (r *ProductRepository) List(ctx context.Context) ([]domain.Product, error) 
 			&product.Code,
 			&product.Description,
 			&product.Balance,
+			&product.PriceInCents,
 			&product.CreatedAt,
 			&product.UpdatedAt,
 		); err != nil {
@@ -85,7 +87,7 @@ func (r *ProductRepository) List(ctx context.Context) ([]domain.Product, error) 
 
 func (r *ProductRepository) FindByID(ctx context.Context, id int64) (domain.Product, error) {
 	const query = `
-		SELECT id, code, description, balance, created_at, updated_at
+		SELECT id, code, description, balance, price_in_cents, created_at, updated_at
 		FROM products
 		WHERE id = $1`
 
@@ -95,6 +97,7 @@ func (r *ProductRepository) FindByID(ctx context.Context, id int64) (domain.Prod
 		&product.Code,
 		&product.Description,
 		&product.Balance,
+		&product.PriceInCents,
 		&product.CreatedAt,
 		&product.UpdatedAt,
 	)

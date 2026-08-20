@@ -44,7 +44,7 @@ describe('ProductService', () => {
 
   it('creates a product without client-generated fields', () => {
     productService
-      .createProduct({ code: 'PROD-005', description: 'Webcam', balance: 3 })
+      .createProduct({ code: 'PROD-005', description: 'Webcam', balance: 3, priceInCents: 14990 })
       .subscribe();
 
     const request = httpTesting.expectOne(productsUrl);
@@ -52,7 +52,8 @@ describe('ProductService', () => {
     expect(request.request.body).toEqual({
       code: 'PROD-005',
       description: 'Webcam',
-      balance: 3
+      balance: 3,
+      priceInCents: 14990
     });
     request.flush({});
   });

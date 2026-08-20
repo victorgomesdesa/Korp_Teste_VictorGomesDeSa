@@ -3,6 +3,7 @@ export interface Product {
   code: string;
   description: string;
   balance: number;
+  priceInCents: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -11,4 +12,5 @@ export interface CreateProductRequest {
   code: string;
   description: string;
   balance: number;
+  priceInCents: number;
 }

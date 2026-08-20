@@ -1,7 +1,8 @@
-import { DatePipe } from '@angular/common';
+import { CurrencyPipe, DatePipe } from '@angular/common';
 import { Component, inject, signal } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatTableModule } from '@angular/material/table';
+import { MatIconModule } from '@angular/material/icon';
 import { RouterLink } from '@angular/router';
 import { finalize } from 'rxjs';
 
@@ -15,11 +16,13 @@ import { InvoiceService } from '../../services/invoice.service';
 @Component({
   selector: 'app-invoices-page',
   imports: [
+    CurrencyPipe,
     DatePipe,
     EmptyStateComponent,
     ErrorMessageComponent,
     LoadingComponent,
     MatButtonModule,
+    MatIconModule,
     MatTableModule,
     RouterLink
   ],
@@ -31,7 +34,7 @@ import { InvoiceService } from '../../services/invoice.service';
           <h1 id="invoices-title">Notas fiscais</h1>
         </div>
 
-        <a mat-flat-button routerLink="/invoices/new">Nova nota</a>
+        <a mat-flat-button routerLink="/invoices/new"><mat-icon aria-hidden="true">add</mat-icon>Nova nota</a>
       </div>
 
       @if (loading()) {
@@ -47,7 +50,7 @@ import { InvoiceService } from '../../services/invoice.service';
             title="Nenhuma nota fiscal cadastrada."
             message="Crie uma nota para registrar os produtos a serem processados."
           />
-          <a mat-flat-button routerLink="/invoices/new">Criar primeira nota</a>
+          <a mat-flat-button routerLink="/invoices/new"><mat-icon aria-hidden="true">add</mat-icon>Criar primeira nota</a>
         </div>
       } @else {
         <div class="table-scroll">
@@ -60,6 +63,23 @@ import { InvoiceService } from '../../services/invoice.service';
             <ng-container matColumnDef="status">
               <th mat-header-cell *matHeaderCellDef scope="col">Status</th>
               <td mat-cell *matCellDef="let invoice">{{ statusLabel(invoice.status) }}</td>
+            </ng-container>
+
+            <ng-container matColumnDef="total">
+              <th mat-header-cell *matHeaderCellDef scope="col">Valor total</th>
+              <td mat-cell *matCellDef="let invoice">
+                {{ invoice.totalInCents / 100 | currency: 'BRL' : 'symbol' : '1.2-2' }}
+              </td>
+            </ng-container>
+
+            <ng-container matColumnDef="products">
+              <th mat-header-cell *matHeaderCellDef scope="col">Produtos</th>
+              <td mat-cell *matCellDef="let invoice">
+                <span class="product-codes">{{ visibleProductCodes(invoice).join(', ') }}</span>
+                @if (hiddenProductCount(invoice) > 0) {
+                  <span class="more-products">+{{ hiddenProductCount(invoice) }}</span>
+                }
+              </td>
             </ng-container>
 
             <ng-container matColumnDef="createdAt">
@@ -85,6 +105,7 @@ import { InvoiceService } from '../../services/invoice.service';
                   [attr.aria-label]="'Visualizar nota ' + invoice.number"
                 >
                   Visualizar
+                  <mat-icon aria-hidden="true">arrow_forward</mat-icon>
                 </a>
               </td>
             </ng-container>
@@ -122,12 +143,29 @@ import { InvoiceService } from '../../services/invoice.service';
       width: 100%;
       background: transparent;
     }
+
+    th.mat-mdc-header-cell,
+    td.mat-mdc-cell {
+      text-align: center;
+      vertical-align: middle;
+    }
+
+    .product-codes {
+      white-space: nowrap;
+    }
+
+    .more-products {
+      margin-left: 0.4rem;
+      color: var(--mat-sys-primary);
+      font-weight: 600;
+      white-space: nowrap;
+    }
   `
 })
 export class InvoicesPageComponent {
   private readonly invoiceService = inject(InvoiceService);
 
-  readonly displayedColumns = ['number', 'status', 'createdAt', 'closedAt', 'actions'];
+  readonly displayedColumns = ['number', 'products', 'total', 'status', 'createdAt', 'closedAt', 'actions'];
   readonly statusLabel = invoiceStatusLabel;
   readonly invoices = signal<InvoiceSummary[]>([]);
   readonly loading = signal(false);
@@ -135,6 +173,14 @@ export class InvoicesPageComponent {
 
   constructor() {
     this.loadInvoices();
+  }
+
+  visibleProductCodes(invoice: InvoiceSummary): string[] {
+    return [...new Set(invoice.productCodes ?? [])].slice(0, 5);
+  }
+
+  hiddenProductCount(invoice: InvoiceSummary): number {
+    return Math.max(0, new Set(invoice.productCodes ?? []).size - 5);
   }
 
   loadInvoices(): void {

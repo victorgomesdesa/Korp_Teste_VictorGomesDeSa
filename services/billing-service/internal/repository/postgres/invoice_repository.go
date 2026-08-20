@@ -49,9 +49,9 @@ func (r *InvoiceRepository) Create(ctx context.Context, invoice domain.Invoice) 
 
 	const createItemQuery = `
 		INSERT INTO invoice_items (
-			invoice_id, product_id, product_code, product_description, quantity
-		) VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, invoice_id, product_id, product_code, product_description, quantity`
+			invoice_id, product_id, product_code, product_description, unit_price_in_cents, quantity
+		) VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, invoice_id, product_id, product_code, product_description, unit_price_in_cents, quantity`
 	for index := range invoice.Items {
 		item := &invoice.Items[index]
 		if err := tx.QueryRow(
@@ -61,6 +61,7 @@ func (r *InvoiceRepository) Create(ctx context.Context, invoice domain.Invoice) 
 			item.ProductID,
 			item.ProductCode,
 			item.ProductDescription,
+			item.UnitPriceInCents,
 			item.Quantity,
 		).Scan(
 			&item.ID,
@@ -68,6 +69,7 @@ func (r *InvoiceRepository) Create(ctx context.Context, invoice domain.Invoice) 
 			&item.ProductID,
 			&item.ProductCode,
 			&item.ProductDescription,
+			&item.UnitPriceInCents,
 			&item.Quantity,
 		); err != nil {
 			return domain.Invoice{}, fmt.Errorf("insert invoice item %d: %w", index, err)
@@ -83,9 +85,14 @@ func (r *InvoiceRepository) Create(ctx context.Context, invoice domain.Invoice) 
 
 func (r *InvoiceRepository) List(ctx context.Context) ([]domain.Invoice, error) {
 	const query = `
-		SELECT id, number, status, created_at, closed_at
-		FROM invoices
-		ORDER BY number DESC`
+		SELECT i.id, i.number, i.status, i.created_at, i.closed_at,
+		       COALESCE(array_agg(ii.product_code ORDER BY ii.id)
+		         FILTER (WHERE ii.id IS NOT NULL), ARRAY[]::varchar[]),
+		       COALESCE(SUM(ii.unit_price_in_cents * ii.quantity), 0)
+		FROM invoices i
+		LEFT JOIN invoice_items ii ON ii.invoice_id = i.id
+		GROUP BY i.id, i.number, i.status, i.created_at, i.closed_at
+		ORDER BY i.number DESC`
 
 	rows, err := r.pool.Query(ctx, query)
 	if err != nil {
@@ -102,6 +109,8 @@ func (r *InvoiceRepository) List(ctx context.Context) ([]domain.Invoice, error) 
 			&invoice.Status,
 			&invoice.CreatedAt,
 			&invoice.ClosedAt,
+			&invoice.ProductCodes,
+			&invoice.TotalInCents,
 		); err != nil {
 			return nil, fmt.Errorf("scan invoice: %w", err)
 		}
@@ -135,7 +144,7 @@ func (r *InvoiceRepository) FindByID(ctx context.Context, id int64) (domain.Invo
 	}
 
 	const itemsQuery = `
-		SELECT id, invoice_id, product_id, product_code, product_description, quantity
+		SELECT id, invoice_id, product_id, product_code, product_description, unit_price_in_cents, quantity
 		FROM invoice_items
 		WHERE invoice_id = $1
 		ORDER BY id ASC`
@@ -154,6 +163,7 @@ func (r *InvoiceRepository) FindByID(ctx context.Context, id int64) (domain.Invo
 			&item.ProductID,
 			&item.ProductCode,
 			&item.ProductDescription,
+			&item.UnitPriceInCents,
 			&item.Quantity,
 		); err != nil {
 			return domain.Invoice{}, fmt.Errorf("scan invoice item: %w", err)

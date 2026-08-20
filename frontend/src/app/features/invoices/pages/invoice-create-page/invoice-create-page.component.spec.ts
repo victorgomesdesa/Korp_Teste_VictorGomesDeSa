@@ -115,7 +115,7 @@ describe('InvoiceCreatePageComponent', () => {
 
     expect(options.find((option) => option.text.startsWith('PROD-001'))?.disabled).toBe(true);
     expect(options.find((option) => option.text.startsWith('PROD-002'))?.disabled).toBe(false);
-    expect(options.find((option) => option.text.startsWith('PROD-003'))?.disabled).toBe(false);
+    expect(options.find((option) => option.text.startsWith('PROD-003'))?.disabled).toBe(true);
   });
 
   it('does not call the API when the form is invalid', async () => {
@@ -168,6 +168,18 @@ describe('InvoiceCreatePageComponent', () => {
     httpTesting.expectNone(`${invoicesUrl}/15/close`);
   });
 
+  it('blocks invoice creation and shows the available stock before submitting', async () => {
+    const fixture = await renderWithProducts();
+    fixture.componentInstance.items.controls[0].setValue({ productId: 2, quantity: 6 });
+    await settle(fixture);
+
+    expect(fixture.nativeElement.textContent).toContain('Disponível em estoque: 5 unidades.');
+    expect(fixture.componentInstance.items.controls[0].controls.quantity.hasError('max')).toBe(true);
+    expect(submitButton(fixture).disabled).toBe(false);
+    submitForm(fixture);
+    httpTesting.expectNone(invoicesUrl);
+  });
+
   it('reports backend failures without clearing the form', async () => {
     const tests = [
       { code: 'PRODUCT_NOT_FOUND', status: 404, message: 'Um dos produtos selecionados não está mais disponível.' },
@@ -175,6 +187,11 @@ describe('InvoiceCreatePageComponent', () => {
         code: 'INVENTORY_SERVICE_UNAVAILABLE',
         status: 503,
         message: 'Não foi possível validar os produtos porque o serviço de estoque está indisponível. Tente novamente.'
+      },
+      {
+        code: 'INSUFFICIENT_STOCK',
+        status: 409,
+        message: 'O estoque mudou e não é mais suficiente para criar a nota.'
       },
       { code: 'INVALID_QUANTITY', status: 422, message: 'Revise os itens da nota fiscal antes de continuar.' }
     ];
@@ -227,6 +244,7 @@ function productFixture(product: Partial<Product> = {}): Product {
     code: 'PROD-001',
     description: 'Teclado Mecânico',
     balance: 10,
+    priceInCents: 19990,
     createdAt: '2026-08-17T12:00:00Z',
     updatedAt: '2026-08-17T12:00:00Z',
     ...product

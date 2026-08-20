@@ -147,7 +147,7 @@ func newE2EEnvironment(t *testing.T, inventoryRequired bool) *e2eEnvironment {
 
 func (environment *e2eEnvironment) createProduct(t *testing.T, code, description string, balance int64) productResponse {
 	t.Helper()
-	payload := fmt.Sprintf(`{"code":%q,"description":%q,"balance":%d}`, code, description, balance)
+	payload := fmt.Sprintf(`{"code":%q,"description":%q,"balance":%d,"priceInCents":100}`, code, description, balance)
 	response := environment.request(t, http.MethodPost, environment.inventoryURL+"/api/products", payload)
 	assertStatus(t, response, http.StatusCreated)
 	var product productResponse

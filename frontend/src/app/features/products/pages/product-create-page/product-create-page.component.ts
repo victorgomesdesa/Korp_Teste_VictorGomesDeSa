@@ -9,16 +9,18 @@ import {
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
+import { MatIconModule } from '@angular/material/icon';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { Router, RouterLink } from '@angular/router';
 import { finalize } from 'rxjs';
 
 import { getApiError, isConnectionError } from '../../../../core/http/error.interceptor';
+import { ErrorMessageComponent } from '../../../../shared/components/error-message/error-message.component';
 import { ProductService } from '../../services/product.service';
 
 @Component({
   selector: 'app-product-create-page',
-  imports: [MatButtonModule, MatFormFieldModule, MatInputModule, ReactiveFormsModule, RouterLink],
+  imports: [ErrorMessageComponent, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, ReactiveFormsModule, RouterLink],
   template: `
     <section class="page" aria-labelledby="product-create-title">
       <p class="page-eyebrow">Estoque</p>
@@ -26,38 +28,57 @@ import { ProductService } from '../../services/product.service';
 
       <form class="product-form" [formGroup]="form" (ngSubmit)="submit()">
         <mat-form-field>
-          <mat-label>Código</mat-label>
-          <input matInput formControlName="code" autocomplete="off" />
+          <mat-label>Número do código</mat-label>
+          <span matTextPrefix>PROD-&nbsp;</span>
+          <input matInput formControlName="code" inputmode="numeric" autocomplete="off" />
           @if (form.controls.code.hasError('codeAlreadyExists')) {
             <mat-error>Já existe um produto com esse código.</mat-error>
           } @else if (form.controls.code.invalid) {
-            <mat-error>Código é obrigatório.</mat-error>
+            <mat-error>Informe somente o número do código.</mat-error>
           }
         </mat-form-field>
 
         <mat-form-field>
-          <mat-label>Descrição</mat-label>
+          <mat-label>Nome</mat-label>
           <input matInput formControlName="description" autocomplete="off" />
           @if (form.controls.description.invalid) {
-            <mat-error>Descrição é obrigatória.</mat-error>
+            <mat-error>Nome é obrigatório.</mat-error>
           }
         </mat-form-field>
 
         <mat-form-field>
-          <mat-label>Saldo</mat-label>
-          <input matInput type="number" formControlName="balance" min="0" step="1" />
+          <mat-label>Estoque</mat-label>
+          <input matInput type="number" formControlName="balance" min="1" step="1" />
           @if (form.controls.balance.hasError('required')) {
-            <mat-error>Saldo é obrigatório.</mat-error>
+            <mat-error>Estoque é obrigatório.</mat-error>
           } @else if (form.controls.balance.hasError('min')) {
-            <mat-error>Saldo não pode ser negativo.</mat-error>
+            <mat-error>Estoque deve ser maior que zero.</mat-error>
           } @else if (form.controls.balance.invalid) {
-            <mat-error>Saldo deve ser um número inteiro.</mat-error>
+            <mat-error>Estoque deve ser um número inteiro.</mat-error>
           }
         </mat-form-field>
+
+        <mat-form-field>
+          <mat-label>Valor/unidade</mat-label>
+          <span matTextPrefix>R$&nbsp;</span>
+          <input matInput type="number" formControlName="price" min="0.01" step="0.01" />
+          @if (form.controls.price.hasError('required')) {
+            <mat-error>Valor é obrigatório.</mat-error>
+          } @else if (form.controls.price.hasError('min')) {
+            <mat-error>Valor deve ser maior que zero.</mat-error>
+          } @else if (form.controls.price.invalid) {
+            <mat-error>Use no máximo duas casas decimais.</mat-error>
+          }
+        </mat-form-field>
+
+        @if (errorMessage()) {
+          <app-error-message [message]="errorMessage()!" />
+        }
 
         <div class="form-actions">
           <a mat-stroked-button routerLink="/products">Cancelar</a>
           <button mat-flat-button type="submit" [disabled]="submitting()">
+            <mat-icon aria-hidden="true">save</mat-icon>
             {{ submitting() ? 'Salvando...' : 'Salvar' }}
           </button>
         </div>
@@ -76,7 +97,7 @@ import { ProductService } from '../../services/product.service';
     .form-actions {
       display: flex;
       justify-content: flex-end;
-      gap: 0.75rem;
+      gap: 1rem;
       margin-top: 1rem;
     }
   `
@@ -88,11 +109,13 @@ export class ProductCreatePageComponent {
   private readonly snackBar = inject(MatSnackBar);
 
   readonly submitting = signal(false);
+  readonly errorMessage = signal<string | null>(null);
 
   readonly form = this.formBuilder.nonNullable.group({
-    code: ['', [Validators.required, notBlankValidator]],
+    code: ['', [Validators.required, productCodeNumberValidator]],
     description: ['', [Validators.required, notBlankValidator]],
-    balance: [0, [Validators.required, Validators.min(0), integerValidator]]
+    balance: [0, [Validators.required, Validators.min(1), integerValidator]],
+    price: [0, [Validators.required, Validators.min(0.01), currencyValidator]]
   });
 
   submit(): void {
@@ -101,11 +124,17 @@ export class ProductCreatePageComponent {
       return;
     }
 
-    const { code, description, balance } = this.form.getRawValue();
+    const { code, description, balance, price } = this.form.getRawValue();
     this.submitting.set(true);
+    this.errorMessage.set(null);
 
     this.productService
-      .createProduct({ code: code.trim(), description: description.trim(), balance })
+      .createProduct({
+        code: `PROD-${code.trim()}`,
+        description: description.trim(),
+        balance,
+        priceInCents: Math.round(price * 100)
+      })
       .pipe(finalize(() => this.submitting.set(false)))
       .subscribe({
         next: () => {
@@ -123,7 +152,7 @@ export class ProductCreatePageComponent {
       return;
     }
 
-    this.snackBar.open(createProductErrorMessage(error), 'Fechar', { duration: 8000 });
+    this.errorMessage.set(createProductErrorMessage(error));
   }
 }
 
@@ -146,4 +175,12 @@ function notBlankValidator(control: AbstractControl<string>): ValidationErrors |
 
 function integerValidator(control: AbstractControl<number>): ValidationErrors | null {
   return Number.isInteger(control.value) ? null : { integer: true };
+}
+
+function currencyValidator(control: AbstractControl<number>): ValidationErrors | null {
+  return Number.isInteger(control.value * 100) ? null : { currency: true };
+}
+
+function productCodeNumberValidator(control: AbstractControl<string>): ValidationErrors | null {
+  return /^\d+$/.test(control.value.trim()) ? null : { pattern: true };
 }

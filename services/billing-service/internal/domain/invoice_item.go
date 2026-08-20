@@ -6,5 +6,6 @@ type InvoiceItem struct {
 	ProductID          int64
 	ProductCode        string
 	ProductDescription string
+	UnitPriceInCents   int64
 	Quantity           int64
 }

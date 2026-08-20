@@ -9,7 +9,7 @@ export function invoiceStatusLabel(status: InvoiceStatus): string {
   return invoiceStatusLabels[status];
 }
 
-export interface InvoiceSummary {
+interface InvoiceBase {
   id: number;
   number: number;
   status: InvoiceStatus;
@@ -17,7 +17,12 @@ export interface InvoiceSummary {
   closedAt: string | null;
 }
 
-export interface Invoice extends InvoiceSummary {
+export interface InvoiceSummary extends InvoiceBase {
+  productCodes: string[];
+  totalInCents: number;
+}
+
+export interface Invoice extends InvoiceBase {
   items: InvoiceItem[];
 }
 
@@ -26,6 +31,7 @@ export interface InvoiceItem {
   productId: number;
   productCode: string;
   productDescription: string;
+  unitPriceInCents: number;
   quantity: number;
 }
 

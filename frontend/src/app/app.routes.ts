@@ -40,5 +40,12 @@ export const routes: Routes = [
       import('./features/invoices/pages/invoice-detail-page/invoice-detail-page.component').then(
         (component) => component.InvoiceDetailPageComponent
       )
+  },
+  {
+    path: 'assistant',
+    loadComponent: () =>
+      import('./features/assistant/pages/assistant-page/assistant-page.component').then(
+        (component) => component.AssistantPageComponent
+      )
   }
 ];

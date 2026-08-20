@@ -1,6 +1,8 @@
+import { CurrencyPipe } from '@angular/common';
 import { Component, inject, signal } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatTableModule } from '@angular/material/table';
+import { MatIconModule } from '@angular/material/icon';
 import { RouterLink } from '@angular/router';
 import { finalize } from 'rxjs';
 
@@ -14,10 +16,12 @@ import { ProductService } from '../../services/product.service';
 @Component({
   selector: 'app-products-page',
   imports: [
+    CurrencyPipe,
     EmptyStateComponent,
     ErrorMessageComponent,
     LoadingComponent,
     MatButtonModule,
+    MatIconModule,
     MatTableModule,
     RouterLink
   ],
@@ -29,7 +33,7 @@ import { ProductService } from '../../services/product.service';
           <h1 id="products-title">Produtos</h1>
         </div>
 
-        <a mat-flat-button routerLink="/products/new">Novo produto</a>
+        <a mat-flat-button routerLink="/products/new"><mat-icon aria-hidden="true">add</mat-icon>Novo produto</a>
       </div>
 
       @if (loading()) {
@@ -45,7 +49,7 @@ import { ProductService } from '../../services/product.service';
             title="Nenhum produto cadastrado."
             message="Cadastre um produto para começar a controlar o estoque."
           />
-          <a mat-flat-button routerLink="/products/new">Cadastrar primeiro produto</a>
+          <a mat-flat-button routerLink="/products/new"><mat-icon aria-hidden="true">add</mat-icon>Cadastrar primeiro produto</a>
         </div>
       } @else {
         <div class="table-scroll">
@@ -56,13 +60,20 @@ import { ProductService } from '../../services/product.service';
             </ng-container>
 
             <ng-container matColumnDef="description">
-              <th mat-header-cell *matHeaderCellDef scope="col">Descrição</th>
+              <th mat-header-cell *matHeaderCellDef scope="col">Nome</th>
               <td mat-cell *matCellDef="let product">{{ product.description }}</td>
             </ng-container>
 
             <ng-container matColumnDef="balance">
-              <th mat-header-cell *matHeaderCellDef scope="col">Saldo</th>
+              <th mat-header-cell *matHeaderCellDef scope="col">Estoque</th>
               <td mat-cell *matCellDef="let product">{{ product.balance }}</td>
+            </ng-container>
+
+            <ng-container matColumnDef="price">
+              <th mat-header-cell *matHeaderCellDef scope="col">Valor/unidade</th>
+              <td mat-cell *matCellDef="let product">
+                {{ product.priceInCents / 100 | currency: 'BRL' : 'symbol' : '1.2-2' }}
+              </td>
             </ng-container>
 
             <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
@@ -98,12 +109,18 @@ import { ProductService } from '../../services/product.service';
       width: 100%;
       background: transparent;
     }
+
+    th.mat-mdc-header-cell,
+    td.mat-mdc-cell {
+      text-align: center;
+      vertical-align: middle;
+    }
   `
 })
 export class ProductsPageComponent {
   private readonly productService = inject(ProductService);
 
-  readonly displayedColumns = ['code', 'description', 'balance'];
+  readonly displayedColumns = ['code', 'description', 'balance', 'price'];
   readonly products = signal<Product[]>([]);
   readonly loading = signal(false);
   readonly errorMessage = signal<string | null>(null);

@@ -31,17 +31,18 @@ describe('ProductCreatePageComponent', () => {
 
     expect(form.valid).toBe(false);
 
-    form.setValue({ code: '   ', description: '   ', balance: 1 });
+    form.setValue({ code: '   ', description: '   ', balance: 1, price: 10 });
     expect(form.controls.code.valid).toBe(false);
     expect(form.controls.description.valid).toBe(false);
 
-    form.setValue({ code: 'PROD-005', description: 'Webcam', balance: 1 });
+    form.setValue({ code: '005', description: 'Webcam', balance: 1, price: 10 });
     expect(form.valid).toBe(true);
   });
 
-  it('rejects negative and fractional balances', () => {
+  it('requires positive integer balance and positive price', () => {
     const fixture = TestBed.createComponent(ProductCreatePageComponent);
     const balance = fixture.componentInstance.form.controls.balance;
+    const price = fixture.componentInstance.form.controls.price;
 
     balance.setValue(-1);
     expect(balance.hasError('min')).toBe(true);
@@ -50,7 +51,16 @@ describe('ProductCreatePageComponent', () => {
     expect(balance.hasError('integer')).toBe(true);
 
     balance.setValue(0);
+    expect(balance.hasError('min')).toBe(true);
+
+    balance.setValue(1);
     expect(balance.valid).toBe(true);
+
+    price.setValue(0);
+    expect(price.hasError('min')).toBe(true);
+
+    price.setValue(0.01);
+    expect(price.valid).toBe(true);
   });
 
   it('does not call the API when the form is invalid', () => {
@@ -69,9 +79,10 @@ describe('ProductCreatePageComponent', () => {
     fixture.detectChanges();
 
     fixture.componentInstance.form.setValue({
-      code: '  PROD-005  ',
+      code: '  005  ',
       description: '  Webcam  ',
-      balance: 3
+      balance: 3,
+      price: 149.9
     });
     submitForm(fixture);
     await settle(fixture);
@@ -82,10 +93,11 @@ describe('ProductCreatePageComponent', () => {
     expect(request.request.body).toEqual({
       code: 'PROD-005',
       description: 'Webcam',
-      balance: 3
+      balance: 3,
+      priceInCents: 14990
     });
 
-    request.flush({ id: 1, code: 'PROD-005', description: 'Webcam', balance: 3 });
+    request.flush({ id: 1, code: 'PROD-005', description: 'Webcam', balance: 3, priceInCents: 14990 });
     await settle(fixture);
 
     expect(fixture.componentInstance.submitting()).toBe(false);
@@ -97,9 +109,10 @@ describe('ProductCreatePageComponent', () => {
     fixture.detectChanges();
 
     fixture.componentInstance.form.setValue({
-      code: 'PROD-001',
+      code: '001',
       description: 'Teclado Mecânico',
-      balance: 10
+      balance: 10,
+      price: 200
     });
     submitForm(fixture);
     await settle(fixture);
@@ -122,9 +135,10 @@ describe('ProductCreatePageComponent', () => {
     fixture.detectChanges();
 
     fixture.componentInstance.form.setValue({
-      code: 'PROD-001',
+      code: '001',
       description: 'Teclado Mecânico',
-      balance: 10
+      balance: 10,
+      price: 200
     });
     submitForm(fixture);
     await settle(fixture);
@@ -136,7 +150,7 @@ describe('ProductCreatePageComponent', () => {
     await settle(fixture);
     expect(fixture.componentInstance.form.controls.code.hasError('codeAlreadyExists')).toBe(true);
 
-    fixture.componentInstance.form.controls.code.setValue('PROD-002');
+    fixture.componentInstance.form.controls.code.setValue('002');
     await settle(fixture);
 
     expect(fixture.componentInstance.form.controls.code.hasError('codeAlreadyExists')).toBe(false);
@@ -148,9 +162,10 @@ describe('ProductCreatePageComponent', () => {
     fixture.detectChanges();
 
     fixture.componentInstance.form.setValue({
-      code: 'PROD-005',
+      code: '005',
       description: 'Webcam',
-      balance: 3
+      balance: 3,
+      price: 149.9
     });
     submitForm(fixture);
     await settle(fixture);
@@ -167,9 +182,10 @@ describe('ProductCreatePageComponent', () => {
     fixture.detectChanges();
 
     fixture.componentInstance.form.setValue({
-      code: 'PROD-005',
+      code: '005',
       description: 'Webcam',
-      balance: 3
+      balance: 3,
+      price: 149.9
     });
     submitForm(fixture);
     await settle(fixture);

@@ -59,6 +59,7 @@ func TestInvoiceHandlerCreate(t *testing.T) {
 		{name: "duplicate product", body: `{"items":[{"productId":1,"quantity":1},{"productId":1,"quantity":2}]}`, serviceErr: &domain.ValidationError{Code: service.ValidationCodeDuplicateProduct}, status: http.StatusUnprocessableEntity, code: service.ValidationCodeDuplicateProduct},
 		{name: "product not found", body: `{"items":[{"productId":99,"quantity":1}]}`, serviceErr: domain.ErrProductNotFound, status: http.StatusNotFound, code: "PRODUCT_NOT_FOUND"},
 		{name: "Inventory unavailable", body: `{"items":[{"productId":1,"quantity":1}]}`, serviceErr: domain.ErrInventoryServiceUnavailable, status: http.StatusServiceUnavailable, code: "INVENTORY_SERVICE_UNAVAILABLE"},
+		{name: "insufficient stock", body: `{"items":[{"productId":1,"quantity":3}]}`, serviceErr: domain.ErrInsufficientStock, status: http.StatusConflict, code: "INSUFFICIENT_STOCK"},
 	}
 
 	for _, test := range tests {
@@ -141,7 +142,7 @@ func TestInvoiceHandlerListsInvoices(t *testing.T) {
 		name     string
 		invoices []domain.Invoice
 	}{
-		{name: "with invoices", invoices: []domain.Invoice{{ID: 2, Number: 1002, Status: domain.InvoiceStatusOpen, CreatedAt: createdAt}}},
+		{name: "with invoices", invoices: []domain.Invoice{{ID: 2, Number: 1002, Status: domain.InvoiceStatusOpen, CreatedAt: createdAt, TotalInCents: 39980}}},
 		{name: "empty", invoices: []domain.Invoice{}},
 	}
 
@@ -163,6 +164,9 @@ func TestInvoiceHandlerListsInvoices(t *testing.T) {
 			if len(body) > 0 {
 				if _, hasItems := body[0]["items"]; hasItems {
 					t.Fatalf("summary unexpectedly contains items: %s", response.Body.String())
+				}
+				if body[0]["totalInCents"] != float64(39980) {
+					t.Fatalf("summary total = %v, want 39980", body[0]["totalInCents"])
 				}
 			}
 		})

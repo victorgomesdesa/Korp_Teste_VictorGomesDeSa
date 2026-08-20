@@ -5,15 +5,16 @@ const runId = Date.now();
 
 test.describe('Jornada da nota fiscal', () => {
   test('cadastra produto, cria nota, fecha, imprime e reduz o estoque', async ({ page }) => {
-    const code = `E2E-PROD-${runId}`;
-    const description = 'Produto E2E';
+    const codeNumber = `${runId}1`;
+    const code = `PROD-${codeNumber}`;
+    const description = 'E2E Produto principal';
 
-    await registerProduct(page, { code, description, balance: '10' });
+    await registerProduct(page, { codeNumber, name: description, stock: '10', price: '99.90' });
 
     await expect(productRow(page, code)).toBeVisible();
     await expect(balanceOf(page, code)).toHaveText('10');
 
-    await createInvoice(page, { code, description, quantity: '2' });
+    await createInvoice(page, { code, quantity: '2' });
 
     // A nota nasce aberta e mostra os snapshots gravados pelo Billing.
     await expect(page).toHaveURL(/\/invoices\/\d+$/);
@@ -23,7 +24,7 @@ test.describe('Jornada da nota fiscal', () => {
     await expect(itemRow).toContainText(description);
     await expect(itemRow).toContainText('2');
 
-    // Criar a nota não consome estoque: o saldo continua 10 antes do fechamento.
+    // Criar a nota não consome estoque: o estoque continua 10 antes do fechamento.
     await page.getByRole('link', { name: 'Produtos', exact: true }).click();
     await expect(balanceOf(page, code)).toHaveText('10');
 
@@ -40,19 +41,17 @@ test.describe('Jornada da nota fiscal', () => {
     await expect(balanceOf(page, code)).toHaveText('8');
   });
 
-  test('recusa o fechamento sem estoque, mantém a nota aberta e não imprime', async ({ page }) => {
-    const code = `E2E-LOW-${runId}`;
+  test('recusa abrir uma nota acima do estoque disponível', async ({ page }) => {
+    const codeNumber = `${runId}2`;
+    const code = `PROD-${codeNumber}`;
+    const description = 'E2E Produto sem estoque suficiente';
 
-    await registerProduct(page, { code, description: 'Produto E2E sem saldo', balance: '1' });
-    await createInvoice(page, { code, description: 'Produto E2E sem saldo', quantity: '2' });
+    await registerProduct(page, { codeNumber, name: description, stock: '1', price: '25' });
+    await openInvoiceForm(page, code, '2');
 
-    const printCalls = await stubPrint(page);
-    await page.getByRole('button', { name: 'Imprimir Nota' }).click();
-
-    await expect(page.getByText('Estoque insuficiente para fechar a nota fiscal.')).toBeVisible();
-    await expect(page.getByText('Aberta')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Imprimir Nota' })).toBeEnabled();
-    expect(await printCalls()).toBe(0);
+    await expect(page.getByText(`${code} possui somente 1 unidade em estoque.`)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Criar nota' })).toBeDisabled();
+    await expect(page).toHaveURL(/\/invoices\/new$/);
 
     await page.getByRole('link', { name: 'Produtos', exact: true }).click();
     await expect(balanceOf(page, code)).toHaveText('1');
@@ -61,14 +60,15 @@ test.describe('Jornada da nota fiscal', () => {
 
 async function registerProduct(
   page: Page,
-  product: { code: string; description: string; balance: string }
+  product: { codeNumber: string; name: string; stock: string; price: string }
 ): Promise<void> {
   await page.goto('/products');
   await page.getByRole('link', { name: 'Novo produto' }).click();
 
-  await page.getByLabel('Código').fill(product.code);
-  await page.getByLabel('Descrição').fill(product.description);
-  await page.getByLabel('Saldo').fill(product.balance);
+  await page.getByLabel('Número do código').fill(product.codeNumber);
+  await page.getByLabel('Nome').fill(product.name);
+  await page.getByLabel('Estoque').fill(product.stock);
+  await page.getByLabel('Valor/unidade').fill(product.price);
   await page.getByRole('button', { name: 'Salvar' }).click();
 
   await expect(page).toHaveURL(/\/products$/);
@@ -76,17 +76,21 @@ async function registerProduct(
 
 async function createInvoice(
   page: Page,
-  invoice: { code: string; description: string; quantity: string }
+  invoice: { code: string; quantity: string }
 ): Promise<void> {
+  await openInvoiceForm(page, invoice.code, invoice.quantity);
+  await page.getByRole('button', { name: 'Criar nota' }).click();
+
+  await expect(page).toHaveURL(/\/invoices\/\d+$/);
+}
+
+async function openInvoiceForm(page: Page, code: string, quantity: string): Promise<void> {
   await page.getByRole('link', { name: 'Notas Fiscais', exact: true }).click();
   await page.getByRole('link', { name: /Nova nota|Criar primeira nota/ }).first().click();
 
   await page.getByLabel('Produto').click();
-  await page.getByRole('option', { name: new RegExp(invoice.code) }).click();
-  await page.getByLabel('Quantidade').fill(invoice.quantity);
-  await page.getByRole('button', { name: 'Criar nota' }).click();
-
-  await expect(page).toHaveURL(/\/invoices\/\d+$/);
+  await page.getByRole('option', { name: new RegExp(code) }).click();
+  await page.getByLabel('Quantidade').fill(quantity);
 }
 
 function productRow(page: Page, code: string) {
@@ -94,7 +98,7 @@ function productRow(page: Page, code: string) {
 }
 
 function balanceOf(page: Page, code: string) {
-  return productRow(page, code).locator('td').last();
+  return productRow(page, code).locator('td').nth(2);
 }
 
 // Substitui window.print para não abrir o diálogo real e permitir contar as chamadas.

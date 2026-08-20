@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help up down logs ps frontend build reset migrate-up migrate-down migrate-inventory-up migrate-inventory-down migrate-billing-up migrate-billing-down test test-all test-inventory test-inventory-integration test-billing test-billing-integration test-billing-e2e test-frontend test-frontend-e2e
+.PHONY: help up down logs ps frontend worker build reset migrate-up migrate-down migrate-inventory-up migrate-inventory-down migrate-billing-up migrate-billing-down test test-all test-inventory test-inventory-integration test-billing test-billing-integration test-billing-e2e test-frontend test-frontend-e2e test-worker
 
 help:
 	@printf '%s\n' \
@@ -12,7 +12,8 @@ help:
 		'  logs                        Acompanha os logs do Docker Compose' \
 		'  ps                          Exibe o estado dos containers' \
 		'  frontend                    Inicia o servidor de desenvolvimento Angular' \
-		'  build                       Compila as imagens backend e o frontend' \
+		'  worker                      Inicia o assistente com Workers AI' \
+		'  build                       Compila backend, frontend e valida o Worker' \
 		'  reset                       Recria o ambiente e APAGA os dados locais' \
 		'' \
 		'Migrations:' \
@@ -24,7 +25,7 @@ help:
 		'  migrate-billing-down        Reverte migrations do Billing' \
 		'' \
 		'Testes:' \
-		'  test                        Executa testes unitários do backend e frontend' \
+		'  test                        Executa testes do backend, frontend e Worker' \
 		'  test-all                    Executa testes unitários, integração e E2E' \
 		'  test-inventory              Executa testes unitários do Inventory' \
 		'  test-inventory-integration  Executa integração do Inventory com race detector' \
@@ -32,7 +33,8 @@ help:
 		'  test-billing-integration    Executa integração do Billing com race detector' \
 		'  test-billing-e2e            Executa E2E Billing para Inventory com race detector' \
 		'  test-frontend               Executa testes unitários do frontend' \
-		'  test-frontend-e2e           Executa a jornada E2E principal do frontend'
+		'  test-frontend-e2e           Executa a jornada E2E principal do frontend' \
+		'  test-worker                 Testa tipos, regras e empacotamento do assistente IA'
 
 up:
 	docker compose up -d
@@ -49,9 +51,13 @@ ps:
 frontend:
 	npm --prefix frontend start
 
+worker:
+	npm --prefix worker run dev
+
 build:
 	docker compose build inventory-service billing-service
 	npm --prefix frontend run build
+	npm --prefix worker run check
 
 reset:
 	@echo 'ATENÇÃO: este comando apagará todos os dados locais do projeto.'
@@ -100,7 +106,10 @@ test-billing:
 test-frontend:
 	npm --prefix frontend test -- --watch=false
 
-test: test-inventory test-billing test-frontend
+test-worker:
+	npm --prefix worker run check
+
+test: test-inventory test-billing test-frontend test-worker
 
 test-all: test test-inventory-integration test-billing-integration test-billing-e2e test-frontend-e2e
 
@@ -149,7 +158,7 @@ test-frontend-e2e:
 	@set -eu; \
 	cleanup() { \
 		invoices=$$(docker compose exec -T billing-db psql -U $${BILLING_DB_USER:-billing} -d $${BILLING_DB_NAME:-billing_db} -t -A \
-			-c "SELECT DISTINCT invoice_id FROM invoice_items WHERE product_code LIKE 'E2E-%'" | paste -sd, -); \
+			-c "SELECT DISTINCT invoice_id FROM invoice_items WHERE product_description LIKE 'E2E %'" | paste -sd, -); \
 		if [ -n "$$invoices" ]; then \
 			docker compose exec -T inventory-db psql -U $${INVENTORY_DB_USER:-inventory} -d $${INVENTORY_DB_NAME:-inventory_db} \
 				-c "DELETE FROM stock_operations WHERE invoice_id IN ($$invoices)" >/dev/null; \
@@ -159,7 +168,7 @@ test-frontend-e2e:
 				-c "DELETE FROM invoices WHERE id IN ($$invoices)" >/dev/null; \
 		fi; \
 		docker compose exec -T inventory-db psql -U $${INVENTORY_DB_USER:-inventory} -d $${INVENTORY_DB_NAME:-inventory_db} \
-			-c "DELETE FROM products WHERE code LIKE 'E2E-%'" >/dev/null; \
+			-c "DELETE FROM products WHERE description LIKE 'E2E %'" >/dev/null; \
 	}; \
 	trap cleanup EXIT INT TERM; \
 	docker compose up -d --build --wait inventory-service billing-service; \

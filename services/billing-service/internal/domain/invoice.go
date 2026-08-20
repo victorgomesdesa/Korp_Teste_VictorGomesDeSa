@@ -10,10 +10,12 @@ const (
 )
 
 type Invoice struct {
-	ID        int64
-	Number    int64
-	Status    InvoiceStatus
-	CreatedAt time.Time
-	ClosedAt  *time.Time
-	Items     []InvoiceItem
+	ID           int64
+	Number       int64
+	Status       InvoiceStatus
+	CreatedAt    time.Time
+	ClosedAt     *time.Time
+	Items        []InvoiceItem
+	ProductCodes []string
+	TotalInCents int64
 }
