@@ -49,8 +49,10 @@ test.describe('Jornada da nota fiscal', () => {
     await registerProduct(page, { codeNumber, name: description, stock: '1', price: '25' });
     await openInvoiceForm(page, code, '2');
 
-    await expect(page.getByText(`${code} possui somente 1 unidade em estoque.`)).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Criar nota' })).toBeDisabled();
+    await expect(page.getByText('Disponível em estoque: 1 unidade.')).toBeVisible();
+    const createButton = page.getByRole('button', { name: 'Criar nota' });
+    await expect(createButton).toBeEnabled();
+    await createButton.click();
     await expect(page).toHaveURL(/\/invoices\/new$/);
 
     await page.getByRole('link', { name: 'Produtos', exact: true }).click();
